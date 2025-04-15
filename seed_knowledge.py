@@ -2,7 +2,7 @@ import os
 from dotenv import load_dotenv
 import psycopg2
 from psycopg2.extras import execute_values
-import openai
+import anthropic
 from mock_charlotte import get_db_connection, get_embedding
 
 load_dotenv()
