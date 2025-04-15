@@ -60,13 +60,8 @@ def setup_database():
 
 def get_embedding(text: str) -> List[float]:
     """Get embedding using Anthropic's API"""
-    # Initialize Anthropic client with explicit API key
-    anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not anthropic_api_key:
-        raise ValueError("ANTHROPIC_API_KEY environment variable is not set")
-    
-    # IMPORTANT: Fixed client initialization - removed proxies if present
-    client = anthropic.Anthropic(api_key=anthropic_api_key)
+    # Initialize Anthropic client with minimal configuration
+    client = anthropic.Client(api_key=os.getenv("ANTHROPIC_API_KEY"))
     
     # Use Claude to generate embeddings
     message = client.messages.create(
@@ -118,13 +113,7 @@ async def mock_charlotte(query: Query):
                     confidence = 1 - distance  # Convert distance to confidence score
                     
                     # Use Claude to enhance the response
-                    anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
-                    if not anthropic_api_key:
-                        raise ValueError("ANTHROPIC_API_KEY environment variable is not set")
-                    
-                    # IMPORTANT: Fixed client initialization
-                    client = anthropic.Anthropic(api_key=anthropic_api_key)
-                    
+                    client = anthropic.Client(api_key=os.getenv("ANTHROPIC_API_KEY"))
                     enhanced_response = client.messages.create(
                         model="claude-3-haiku-20240307",
                         max_tokens=500,
@@ -141,13 +130,7 @@ async def mock_charlotte(query: Query):
                     )
                 else:
                     # Fallback response using Claude
-                    anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
-                    if not anthropic_api_key:
-                        raise ValueError("ANTHROPIC_API_KEY environment variable is not set")
-                    
-                    # IMPORTANT: Fixed client initialization
-                    client = anthropic.Anthropic(api_key=anthropic_api_key)
-                    
+                    client = anthropic.Client(api_key=os.getenv("ANTHROPIC_API_KEY"))
                     fallback_response = client.messages.create(
                         model="claude-3-haiku-20240307",
                         max_tokens=500,
