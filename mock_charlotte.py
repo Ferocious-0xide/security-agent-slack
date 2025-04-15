@@ -60,7 +60,11 @@ def setup_database():
 
 def get_embedding(text: str) -> List[float]:
     """Get embedding using Anthropic's API"""
-    client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+    # Initialize Anthropic client with explicit API key
+    anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not anthropic_api_key:
+        raise ValueError("ANTHROPIC_API_KEY environment variable is not set")
+    client = anthropic.Anthropic(api_key=anthropic_api_key)
     
     # Use Claude to generate embeddings
     message = client.messages.create(
@@ -112,7 +116,10 @@ async def mock_charlotte(query: Query):
                     confidence = 1 - distance  # Convert distance to confidence score
                     
                     # Use Claude to enhance the response
-                    client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+                    anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+                    if not anthropic_api_key:
+                        raise ValueError("ANTHROPIC_API_KEY environment variable is not set")
+                    client = anthropic.Anthropic(api_key=anthropic_api_key)
                     enhanced_response = client.messages.create(
                         model="claude-3-haiku-20240307",
                         max_tokens=500,
@@ -129,7 +136,10 @@ async def mock_charlotte(query: Query):
                     )
                 else:
                     # Fallback response using Claude
-                    client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+                    anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+                    if not anthropic_api_key:
+                        raise ValueError("ANTHROPIC_API_KEY environment variable is not set")
+                    client = anthropic.Anthropic(api_key=anthropic_api_key)
                     fallback_response = client.messages.create(
                         model="claude-3-haiku-20240307",
                         max_tokens=500,
