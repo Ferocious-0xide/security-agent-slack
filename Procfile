@@ -1,1 +1,2 @@
-web: uvicorn mock_charlotte:app --host=0.0.0.0 --port=$PORT 
+web: uvicorn mock_charlotte:app --host=0.0.0.0 --port=$PORT
+worker: python app.py

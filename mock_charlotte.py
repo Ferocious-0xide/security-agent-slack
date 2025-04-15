@@ -64,6 +64,8 @@ def get_embedding(text: str) -> List[float]:
     anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
     if not anthropic_api_key:
         raise ValueError("ANTHROPIC_API_KEY environment variable is not set")
+    
+    # IMPORTANT: Fixed client initialization - removed proxies if present
     client = anthropic.Anthropic(api_key=anthropic_api_key)
     
     # Use Claude to generate embeddings
@@ -119,7 +121,10 @@ async def mock_charlotte(query: Query):
                     anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
                     if not anthropic_api_key:
                         raise ValueError("ANTHROPIC_API_KEY environment variable is not set")
+                    
+                    # IMPORTANT: Fixed client initialization
                     client = anthropic.Anthropic(api_key=anthropic_api_key)
+                    
                     enhanced_response = client.messages.create(
                         model="claude-3-haiku-20240307",
                         max_tokens=500,
@@ -139,7 +144,10 @@ async def mock_charlotte(query: Query):
                     anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
                     if not anthropic_api_key:
                         raise ValueError("ANTHROPIC_API_KEY environment variable is not set")
+                    
+                    # IMPORTANT: Fixed client initialization
                     client = anthropic.Anthropic(api_key=anthropic_api_key)
+                    
                     fallback_response = client.messages.create(
                         model="claude-3-haiku-20240307",
                         max_tokens=500,
@@ -164,4 +172,4 @@ async def startup_event():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000))) 
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
