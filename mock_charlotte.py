@@ -13,6 +13,10 @@ import numpy as np
 from pgvector.psycopg2 import register_vector
 import traceback
 from dotenv import load_dotenv
+import urllib3
+
+# Disable SSL warnings
+urllib3.disable_warnings()
 
 # Configure logging
 logging.basicConfig(
@@ -34,8 +38,13 @@ if not api_key:
         logger.info(f"{key}: {'Set' if os.getenv(key) else 'Not set'}")
     raise ValueError("OPENAI_API_KEY must be set in environment variables")
 
-# Initialize OpenAI client
-openai_client = openai.OpenAI(api_key=api_key)
+# Initialize OpenAI client with explicit configuration
+openai_client = openai.OpenAI(
+    api_key=api_key,
+    base_url="https://api.openai.com/v1",
+    timeout=30.0,
+    max_retries=3
+)
 logger.info("OpenAI client initialized successfully")
 
 # Initialize FastAPI app
