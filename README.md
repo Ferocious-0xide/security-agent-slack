@@ -1,60 +1,212 @@
-# Security Analyst Prompt Suggestion Agent
+# Security Agent Integration Platform
 
-This agent provides automated prompt suggestions for junior security analysts by leveraging CrowdStrike's Charlotte AI and posting to a Slack channel.
+A comprehensive security operations platform that integrates Slack, Salesforce, and Charlotte AI to provide intelligent security incident response and automation.
 
-## Prerequisites
+## System Architecture
 
+```mermaid
+graph TD
+    subgraph Slack["Slack Workspace"]
+        SB[Slack Bot]
+        SC[Slack Commands]
+        SE[Slack Events]
+    end
+
+    subgraph Heroku["Heroku Platform"]
+        SA[Security Agent]
+        DB[(PostgreSQL + pgvector)]
+        CR[Charlotte RAG Service]
+    end
+
+    subgraph Salesforce["Salesforce Platform"]
+        SF[Security Operations]
+        WF[Workflow Engine]
+        AG[Automation Agent]
+    end
+
+    SB -->|HTTP Requests| SA
+    SC -->|Command Processing| SA
+    SE -->|Event Processing| SA
+    
+    SA -->|Vector Search| DB
+    SA -->|Knowledge Query| CR
+    SA -->|Incident Creation| SF
+    SA -->|Workflow Trigger| WF
+    
+    SF -->|Status Updates| SA
+    WF -->|Execution Results| SA
+    AG -->|Automation Results| SA
+    
+    SA -->|Response| SB
+```
+
+## Components
+
+### 1. Slack Integration
+- **Slack Bot**: Handles user interactions and commands
+- **Slack Commands**: Custom slash commands for security operations
+- **Slack Events**: Real-time event processing for security alerts
+
+### 2. Heroku Services
+- **Security Agent**: Core application handling:
+  - Command processing
+  - Event handling
+  - Integration orchestration
+  - Response generation
+- **Database**: PostgreSQL with pgvector for:
+  - Security knowledge storage
+  - Vector similarity search
+  - Incident history
+- **Charlotte RAG Service**: Mock service providing:
+  - Security knowledge retrieval
+  - Context-aware responses
+  - Incident analysis
+
+### 3. Salesforce Integration
+- **Security Operations**: Incident management and tracking
+- **Workflow Engine**: Automated response workflows
+- **Automation Agent**: Task automation and execution
+
+## Data Flow
+
+1. **User Interaction**:
+   - User sends command or alert in Slack
+   - Slack Bot receives and processes the message
+   - Security Agent is notified
+
+2. **Knowledge Processing**:
+   - Security Agent queries Charlotte RAG service
+   - Vector search is performed on security knowledge base
+   - Context-aware response is generated
+
+3. **Incident Management**:
+   - Security Agent creates incident in Salesforce
+   - Workflow Engine triggers appropriate automation
+   - Automation Agent executes required tasks
+
+4. **Response Generation**:
+   - Security Agent compiles response from:
+     - Charlotte AI analysis
+     - Salesforce incident data
+     - Automation results
+   - Response is sent back to Slack
+
+## Environment Setup
+
+### Prerequisites
+- Python 3.11+
+- PostgreSQL 14+
+- pgvector extension
 - Heroku account
-- Slack workspace with bot integration
-- CrowdStrike Charlotte AI access
+- Slack workspace
+- Salesforce org
 
-## Setup
-
-1. Clone this repository
-2. Copy `.env.example` to `.env` and fill in your credentials:
-   - `SLACK_BOT_TOKEN`: Your Slack bot token
-   - `SLACK_CHANNEL_ID`: The ID of your target Slack channel
-   - `CHARLOTTE_API_KEY`: Your CrowdStrike Charlotte AI API key
-   - `CHARLOTTE_API_ENDPOINT`: CrowdStrike Charlotte AI endpoint
-   - `SUGGESTION_INTERVAL_MINUTES`: How often to post suggestions (default: 30)
-
-## Deployment to Heroku
-
-1. Create a new Heroku app:
+### Configuration
+1. **Environment Variables**:
    ```bash
-   heroku create
+   # Slack Configuration
+   SLACK_BOT_TOKEN=xoxb-...
+   SLACK_APP_TOKEN=xapp-...
+   SLACK_SIGNING_SECRET=...
+
+   # OpenAI Configuration
+   OPENAI_API_KEY=sk-...
+
+   # Database Configuration
+   DATABASE_URL=postgresql://...
+
+   # Salesforce Configuration
+   SF_CLIENT_ID=...
+   SF_CLIENT_SECRET=...
+   SF_USERNAME=...
+   SF_PASSWORD=...
    ```
 
-2. Set environment variables:
+2. **Database Setup**:
    ```bash
-   heroku config:set SLACK_BOT_TOKEN=your-token
-   heroku config:set SLACK_CHANNEL_ID=your-channel-id
-   heroku config:set CHARLOTTE_API_KEY=your-api-key
-   heroku config:set CHARLOTTE_API_ENDPOINT=your-endpoint
-   heroku config:set SUGGESTION_INTERVAL_MINUTES=30
+   # Enable pgvector extension
+   CREATE EXTENSION vector;
+
+   # Create security knowledge table
+   CREATE TABLE security_knowledge (
+       id SERIAL PRIMARY KEY,
+       content TEXT NOT NULL,
+       embedding vector(1536),
+       created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+   );
    ```
 
-3. Deploy:
+## Development Workflow
+
+1. **Local Development**:
    ```bash
+   # Create virtual environment
+   python -m venv .venv
+   source .venv/bin/activate
+
+   # Install dependencies
+   pip install -r requirements.txt
+
+   # Run local server
+   uvicorn mock_charlotte:app --reload
+   ```
+
+2. **Testing**:
+   ```bash
+   # Run database setup
+   python setup_db.py
+
+   # Test endpoint
+   python test_endpoint.py
+   ```
+
+3. **Deployment**:
+   ```bash
+   # Push to Heroku
    git push heroku main
+
+   # Set environment variables
+   heroku config:set KEY=VALUE
    ```
 
-4. Ensure the worker is running:
-   ```bash
-   heroku ps:scale worker=1
-   ```
+## Security Considerations
 
-## Features
+1. **API Key Management**:
+   - Never commit API keys to version control
+   - Use environment variables for all sensitive data
+   - Rotate keys regularly
 
-- Automated security analysis prompt suggestions
-- Integration with CrowdStrike Charlotte AI for relevant insights
-- Regular posting to Slack channel
-- Configurable posting interval
-- Error handling and logging
+2. **Data Protection**:
+   - Encrypt sensitive data in transit and at rest
+   - Implement proper access controls
+   - Regular security audits
 
-## Monitoring
+3. **Rate Limiting**:
+   - Implement rate limiting for API endpoints
+   - Monitor for suspicious activity
+   - Set up alerts for unusual patterns
 
-Monitor the application logs using:
-```bash
-heroku logs --tail
-``` 
+## Future Enhancements
+
+1. **Advanced Features**:
+   - Machine learning for incident classification
+   - Automated response recommendations
+   - Integration with additional security tools
+
+2. **Scalability**:
+   - Horizontal scaling for high availability
+   - Caching layer for performance
+   - Load balancing for heavy traffic
+
+3. **Monitoring**:
+   - Comprehensive logging
+   - Performance metrics
+   - Health checks
+
+## Support
+
+For issues and feature requests, please create a GitHub issue in this repository.
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details. 

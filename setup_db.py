@@ -6,6 +6,18 @@ import psycopg2
 from psycopg2.extras import execute_values
 from contextlib import contextmanager
 import numpy as np
+from dotenv import load_dotenv
+import logging
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Load environment variables
+load_dotenv()
 
 # Database connection configuration
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -19,29 +31,153 @@ def get_db_connection():
         conn.close()
 
 def setup_database():
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            # Enable pgvector extension
-            cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
-            
-            # Create security_knowledge table with vector support
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS security_knowledge (
-                    id SERIAL PRIMARY KEY,
-                    content TEXT NOT NULL,
-                    embedding vector(1536),
-                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            
-            # Create index for vector similarity search
-            cur.execute("""
-                CREATE INDEX IF NOT EXISTS security_knowledge_embedding_idx 
-                ON security_knowledge 
-                USING ivfflat (embedding vector_cosine_ops)
-            """)
-            
-            conn.commit()
+    """Set up the database with all required tables and extensions."""
+    try:
+        # Connect to the database
+        conn = psycopg2.connect(os.getenv("DATABASE_URL"))
+        conn.autocommit = True
+        cur = conn.cursor()
+        
+        # Enable required extensions
+        logger.info("Enabling database extensions...")
+        cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        cur.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
+        
+        # Create documents table for RAG
+        logger.info("Creating documents table...")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS documents (
+                id SERIAL PRIMARY KEY,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                embedding vector(1536),
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        # Create incidents table
+        logger.info("Creating incidents table...")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS incidents (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                title TEXT NOT NULL,
+                description TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open',
+                severity TEXT NOT NULL DEFAULT 'medium',
+                created_by TEXT NOT NULL,
+                assigned_to TEXT,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                resolved_at TIMESTAMP WITH TIME ZONE,
+                metadata JSONB DEFAULT '{}'::jsonb
+            )
+        """)
+        
+        # Create incident_history table
+        logger.info("Creating incident_history table...")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS incident_history (
+                id SERIAL PRIMARY KEY,
+                incident_id UUID REFERENCES incidents(id) ON DELETE CASCADE,
+                action TEXT NOT NULL,
+                performed_by TEXT NOT NULL,
+                details JSONB DEFAULT '{}'::jsonb,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        # Create user_interactions table
+        logger.info("Creating user_interactions table...")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS user_interactions (
+                id SERIAL PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                channel_id TEXT NOT NULL,
+                interaction_type TEXT NOT NULL,
+                query TEXT,
+                response TEXT,
+                confidence FLOAT,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                metadata JSONB DEFAULT '{}'::jsonb
+            )
+        """)
+        
+        # Create command_history table
+        logger.info("Creating command_history table...")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS command_history (
+                id SERIAL PRIMARY KEY,
+                command TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                channel_id TEXT NOT NULL,
+                arguments JSONB DEFAULT '{}'::jsonb,
+                status TEXT NOT NULL DEFAULT 'success',
+                error_message TEXT,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        # Create indexes
+        logger.info("Creating indexes...")
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS documents_embedding_idx 
+            ON documents USING ivfflat (embedding vector_cosine_ops)
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS incidents_status_idx 
+            ON incidents(status)
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS incidents_created_at_idx 
+            ON incidents(created_at)
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS user_interactions_user_id_idx 
+            ON user_interactions(user_id)
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS command_history_user_id_idx 
+            ON command_history(user_id)
+        """)
+        
+        # Create functions
+        logger.info("Creating database functions...")
+        cur.execute("""
+            CREATE OR REPLACE FUNCTION update_updated_at_column()
+            RETURNS TRIGGER AS $$
+            BEGIN
+                NEW.updated_at = CURRENT_TIMESTAMP;
+                RETURN NEW;
+            END;
+            $$ language 'plpgsql';
+        """)
+        
+        # Create triggers
+        logger.info("Creating triggers...")
+        cur.execute("""
+            CREATE TRIGGER update_documents_updated_at
+            BEFORE UPDATE ON documents
+            FOR EACH ROW
+            EXECUTE FUNCTION update_updated_at_column();
+        """)
+        cur.execute("""
+            CREATE TRIGGER update_incidents_updated_at
+            BEFORE UPDATE ON incidents
+            FOR EACH ROW
+            EXECUTE FUNCTION update_updated_at_column();
+        """)
+        
+        logger.info("Database setup completed successfully!")
+        
+    except Exception as e:
+        logger.error(f"Error setting up database: {e}")
+        raise
+    finally:
+        if 'cur' in locals():
+            cur.close()
+        if 'conn' in locals():
+            conn.close()
 
 # Initial security knowledge base
 SECURITY_KNOWLEDGE = [

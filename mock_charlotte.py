@@ -1,132 +1,196 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from typing import List, Optional
 import os
-from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+from typing import List, Optional, Dict, Any
+import openai
+from datetime import datetime
+import logging
+import json
 import psycopg2
-from psycopg2.extras import execute_values
+from psycopg2.extras import RealDictCursor
 import numpy as np
 from pgvector.psycopg2 import register_vector
-import openai
-from contextlib import contextmanager
+import traceback
 
-load_dotenv()
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Mock Charlotte AI")
+# Initialize FastAPI app
+app = FastAPI(title="Mock Charlotte RAG Service")
 
-# Database connection configuration
-DATABASE_URL = os.getenv("DATABASE_URL")
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
+# Initialize OpenAI client
+openai_client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+# Database connection
+def get_db_connection():
+    try:
+        conn = psycopg2.connect(
+            os.getenv("DATABASE_URL"),
+            cursor_factory=RealDictCursor
+        )
+        register_vector(conn)
+        return conn
+    except Exception as e:
+        logger.error(f"Database connection error: {e}")
+        raise HTTPException(status_code=500, detail="Database connection failed")
+
+# Models
 class Query(BaseModel):
-    query: str
-    max_tokens: Optional[int] = 500
+    query: str = Field(..., description="The query to process")
+    max_tokens: Optional[int] = Field(500, description="Maximum tokens for response")
+    context: Optional[Dict[str, Any]] = Field(None, description="Additional context for the query")
 
 class Response(BaseModel):
-    answer: str
-    confidence: float
+    answer: str = Field(..., description="The generated answer")
+    confidence: float = Field(..., description="Confidence score of the answer")
+    sources: List[Dict[str, Any]] = Field(..., description="List of sources used")
+    timestamp: str = Field(..., description="Timestamp of the response")
 
-@contextmanager
-def get_db_connection():
-    conn = psycopg2.connect(DATABASE_URL)
-    try:
-        yield conn
-    finally:
-        conn.close()
+class ErrorResponse(BaseModel):
+    error: str = Field(..., description="Error message")
+    details: Optional[str] = Field(None, description="Additional error details")
+    timestamp: str = Field(..., description="Timestamp of the error")
 
-def setup_database():
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            # Enable pgvector extension
-            cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
-            
-            # Create security_knowledge table with vector support
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS security_knowledge (
-                    id SERIAL PRIMARY KEY,
-                    content TEXT NOT NULL,
-                    embedding vector(1536),
-                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            
-            # Create index for vector similarity search
-            cur.execute("""
-                CREATE INDEX IF NOT EXISTS security_knowledge_embedding_idx 
-                ON security_knowledge 
-                USING ivfflat (embedding vector_cosine_ops)
-            """)
-            
-            conn.commit()
-
+# Helper functions
 def get_embedding(text: str) -> List[float]:
-    """Get embedding using OpenAI's API"""
-    response = openai.Embedding.create(
-        input=text,
-        model="text-embedding-ada-002"
-    )
-    return response['data'][0]['embedding']
-
-@app.post("/v1/chat/completions", response_model=Response)
-async def mock_charlotte(query: Query):
+    """Get embedding for text using OpenAI."""
     try:
-        # Get embedding for the query
+        response = openai_client.embeddings.create(
+            model="text-embedding-3-small",
+            input=text
+        )
+        return response.data[0].embedding
+    except Exception as e:
+        logger.error(f"Embedding generation error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate embedding")
+
+def format_slack_response(response: Response) -> Dict[str, Any]:
+    """Format response for Slack."""
+    confidence_emoji = "🟢" if response.confidence > 0.8 else "🟡" if response.confidence > 0.5 else "🔴"
+    
+    blocks = [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*Analysis:*\n{response.answer}"
+            }
+        },
+        {
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": f"{confidence_emoji} Confidence: {response.confidence:.2%}"
+                },
+                {
+                    "type": "mrkdwn",
+                    "text": f"🕒 {response.timestamp}"
+                }
+            ]
+        }
+    ]
+
+    if response.sources:
+        sources_text = "\n".join([f"• {source['title']}" for source in response.sources[:3]])
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*Sources:*\n{sources_text}"
+            }
+        })
+
+    return {"blocks": blocks}
+
+# API endpoints
+@app.post("/v1/chat/completions", response_model=Response)
+async def chat_completions(query: Query, request: Request):
+    """Process a query and return a response."""
+    try:
+        # Validate API key
+        auth_header = request.headers.get("Authorization")
+        if not auth_header or not auth_header.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="Invalid or missing API key")
+        
+        api_key = auth_header.split(" ")[1]
+        if api_key != os.getenv("CHARLOTTE_SERVICE_KEY"):
+            raise HTTPException(status_code=401, detail="Invalid API key")
+
+        # Get query embedding
         query_embedding = get_embedding(query.query)
         
+        # Search for relevant documents
         with get_db_connection() as conn:
             with conn.cursor() as cur:
-                # Register vector type with psycopg2
-                register_vector(conn)
-                
-                # Perform vector similarity search
                 cur.execute("""
-                    SELECT content, embedding <=> %s as distance
-                    FROM security_knowledge
-                    ORDER BY embedding <=> %s
-                    LIMIT 1
-                """, (query_embedding, query_embedding))
-                
-                result = cur.fetchone()
-                
-                if result:
-                    content, distance = result
-                    confidence = 1 - distance  # Convert distance to confidence score
-                    
-                    # Use GPT to enhance the response
-                    enhanced_response = openai.ChatCompletion.create(
-                        model="gpt-3.5-turbo",
-                        max_tokens=500,
-                        messages=[
-                            {"role": "system", "content": "You are a cybersecurity expert assistant. Based on the retrieved knowledge and the user's query, provide a detailed and accurate response."},
-                            {"role": "user", "content": f"Query: {query.query}\nRetrieved Knowledge: {content}\n\nProvide a comprehensive security analysis based on this information."}
-                        ]
-                    )
-                    
-                    return Response(
-                        answer=enhanced_response.choices[0].message.content,
-                        confidence=confidence
-                    )
-                else:
-                    # Fallback response using GPT
-                    fallback_response = openai.ChatCompletion.create(
-                        model="gpt-3.5-turbo",
-                        max_tokens=500,
-                        messages=[
-                            {"role": "system", "content": "You are a cybersecurity expert assistant. When no specific knowledge is available, provide a general security analysis."},
-                            {"role": "user", "content": f"Provide a security analysis for: {query.query}"}
-                        ]
-                    )
-                    
-                    return Response(
-                        answer=fallback_response.choices[0].message.content,
-                        confidence=0.5
-                    )
-    
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+                    SELECT title, content, 
+                           embedding <=> %s as distance
+                    FROM documents
+                    ORDER BY distance
+                    LIMIT 5
+                """, (query_embedding,))
+                results = cur.fetchall()
 
-@app.on_event("startup")
-async def startup_event():
-    setup_database()
+        # Format context
+        context = "\n\n".join([f"Title: {r['title']}\nContent: {r['content']}" for r in results])
+        
+        # Generate response
+        try:
+            completion = openai_client.chat.completions.create(
+                model="gpt-4-turbo-preview",
+                messages=[
+                    {"role": "system", "content": "You are a security analyst assistant. Provide detailed, accurate analysis based on the context."},
+                    {"role": "user", "content": f"Context:\n{context}\n\nQuery: {query.query}"}
+                ],
+                max_tokens=query.max_tokens
+            )
+            
+            answer = completion.choices[0].message.content
+            confidence = min(1.0, len(context) / 1000)  # Simple confidence metric
+            
+            return Response(
+                answer=answer,
+                confidence=confidence,
+                sources=[{"title": r["title"]} for r in results],
+                timestamp=datetime.now().isoformat()
+            )
+            
+        except Exception as e:
+            logger.error(f"OpenAI API error: {e}")
+            raise HTTPException(status_code=500, detail="Failed to generate response")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint."""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+        return {"status": "healthy"}
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        raise HTTPException(status_code=500, detail="Service unhealthy")
 
 if __name__ == "__main__":
     import uvicorn
