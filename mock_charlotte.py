@@ -38,13 +38,8 @@ if not api_key:
         logger.info(f"{key}: {'Set' if os.getenv(key) else 'Not set'}")
     raise ValueError("OPENAI_API_KEY must be set in environment variables")
 
-# Initialize OpenAI client with explicit configuration
-openai_client = openai.OpenAI(
-    api_key=api_key,
-    base_url="https://api.openai.com/v1",
-    timeout=30.0,
-    max_retries=3
-)
+# Initialize OpenAI client with minimal configuration
+openai_client = openai.OpenAI(api_key=api_key)
 logger.info("OpenAI client initialized successfully")
 
 # Initialize FastAPI app
