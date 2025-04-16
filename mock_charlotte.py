@@ -7,7 +7,7 @@ import psycopg2
 from psycopg2.extras import execute_values
 import numpy as np
 from pgvector.psycopg2 import register_vector
-import anthropic
+import openai
 from contextlib import contextmanager
 
 load_dotenv()
@@ -59,33 +59,12 @@ def setup_database():
             conn.commit()
 
 def get_embedding(text: str) -> List[float]:
-    """Get embedding using Anthropic's API"""
-    # Initialize Anthropic client with minimal configuration
-    client = anthropic.Client(api_key=os.getenv("ANTHROPIC_API_KEY"))
-    
-    # Use Claude to generate embeddings
-    message = client.messages.create(
-        model="claude-3-haiku-20240307",
-        max_tokens=1536,
-        system="You are an expert at converting text into high-quality semantic embeddings. For the given input, return a list of 1536 floating point numbers that represent the semantic meaning of the text. These embeddings will be used for similarity search in a security context.",
-        messages=[{
-            "role": "user",
-            "content": f"Generate embeddings for: {text}"
-        }]
+    """Get embedding using OpenAI's API"""
+    response = openai.Embedding.create(
+        input=text,
+        model="text-embedding-ada-002"
     )
-    
-    # Parse the response into a list of floats
-    try:
-        # Extract numbers from the response
-        embedding_text = message.content[0].text
-        # Convert string representation of numbers into actual float values
-        embedding = [float(num) for num in embedding_text.strip('[]').split(',')]
-        # Ensure we have exactly 1536 dimensions
-        if len(embedding) != 1536:
-            raise ValueError(f"Expected 1536 dimensions, got {len(embedding)}")
-        return embedding
-    except Exception as e:
-        raise ValueError(f"Failed to parse embeddings: {e}")
+    return response['data'][0]['embedding']
 
 @app.post("/v1/chat/completions", response_model=Response)
 async def mock_charlotte(query: Query):
@@ -112,37 +91,33 @@ async def mock_charlotte(query: Query):
                     content, distance = result
                     confidence = 1 - distance  # Convert distance to confidence score
                     
-                    # Use Claude to enhance the response
-                    client = anthropic.Client(api_key=os.getenv("ANTHROPIC_API_KEY"))
-                    enhanced_response = client.messages.create(
-                        model="claude-3-haiku-20240307",
+                    # Use GPT to enhance the response
+                    enhanced_response = openai.ChatCompletion.create(
+                        model="gpt-3.5-turbo",
                         max_tokens=500,
-                        system="You are a cybersecurity expert assistant. Based on the retrieved knowledge and the user's query, provide a detailed and accurate response.",
-                        messages=[{
-                            "role": "user",
-                            "content": f"Query: {query.query}\nRetrieved Knowledge: {content}\n\nProvide a comprehensive security analysis based on this information."
-                        }]
+                        messages=[
+                            {"role": "system", "content": "You are a cybersecurity expert assistant. Based on the retrieved knowledge and the user's query, provide a detailed and accurate response."},
+                            {"role": "user", "content": f"Query: {query.query}\nRetrieved Knowledge: {content}\n\nProvide a comprehensive security analysis based on this information."}
+                        ]
                     )
                     
                     return Response(
-                        answer=enhanced_response.content[0].text,
+                        answer=enhanced_response.choices[0].message.content,
                         confidence=confidence
                     )
                 else:
-                    # Fallback response using Claude
-                    client = anthropic.Client(api_key=os.getenv("ANTHROPIC_API_KEY"))
-                    fallback_response = client.messages.create(
-                        model="claude-3-haiku-20240307",
+                    # Fallback response using GPT
+                    fallback_response = openai.ChatCompletion.create(
+                        model="gpt-3.5-turbo",
                         max_tokens=500,
-                        system="You are a cybersecurity expert assistant. When no specific knowledge is available, provide a general security analysis.",
-                        messages=[{
-                            "role": "user",
-                            "content": f"Provide a security analysis for: {query.query}"
-                        }]
+                        messages=[
+                            {"role": "system", "content": "You are a cybersecurity expert assistant. When no specific knowledge is available, provide a general security analysis."},
+                            {"role": "user", "content": f"Provide a security analysis for: {query.query}"}
+                        ]
                     )
                     
                     return Response(
-                        answer=fallback_response.content[0].text,
+                        answer=fallback_response.choices[0].message.content,
                         confidence=0.5
                     )
     
