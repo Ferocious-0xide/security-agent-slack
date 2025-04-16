@@ -12,6 +12,7 @@ from psycopg2.extras import RealDictCursor
 import numpy as np
 from pgvector.psycopg2 import register_vector
 import traceback
+from dotenv import load_dotenv
 
 # Configure logging
 logging.basicConfig(
@@ -19,6 +20,23 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Load environment variables
+load_dotenv()
+
+# Debug environment variables
+logger.info("Checking environment variables...")
+api_key = os.getenv("OPENAI_API_KEY")
+if not api_key:
+    logger.error("OPENAI_API_KEY not found in environment variables")
+    logger.info("Current environment variables:")
+    for key in ["OPENAI_API_KEY", "DATABASE_URL", "CHARLOTTE_SERVICE_KEY"]:
+        logger.info(f"{key}: {'Set' if os.getenv(key) else 'Not set'}")
+    raise ValueError("OPENAI_API_KEY must be set in environment variables")
+
+# Initialize OpenAI client
+openai_client = openai.OpenAI(api_key=api_key)
+logger.info("OpenAI client initialized successfully")
 
 # Initialize FastAPI app
 app = FastAPI(title="Mock Charlotte RAG Service")
@@ -31,9 +49,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Initialize OpenAI client
-openai_client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # Database connection
 def get_db_connection():
