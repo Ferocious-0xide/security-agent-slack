@@ -1,8 +1,9 @@
 import os
 from dotenv import load_dotenv
-import psycopg2
-from psycopg2.extras import execute_values
 import numpy as np
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from models import Base, SecurityKnowledge
 
 load_dotenv()
 
@@ -50,43 +51,34 @@ SECURITY_KNOWLEDGE = [
     }
 ]
 
-def get_db_connection():
-    """Get a database connection."""
-    return psycopg2.connect(os.getenv('DATABASE_URL'))
-
 def seed_database():
     """Populate the database with initial security knowledge"""
     try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                # Enable pgvector extension and create table if not exists
-                cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS security_knowledge (
-                        id SERIAL PRIMARY KEY,
-                        title VARCHAR(255) NOT NULL,
-                        content TEXT NOT NULL,
-                        category VARCHAR(100) NOT NULL,
-                        embedding vector(1536),
-                        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-                    )
-                """)
-                
-                # Generate dummy embeddings (all zeros) and insert data
-                for knowledge in SECURITY_KNOWLEDGE:
-                    # Create a dummy embedding (all zeros)
-                    dummy_embedding = np.zeros(1536).tolist()
-                    cur.execute(
-                        "INSERT INTO security_knowledge (title, content, category, embedding) VALUES (%s, %s, %s, %s)",
-                        (knowledge["title"], knowledge["content"], knowledge["category"], dummy_embedding)
-                    )
-                
-                conn.commit()
-                print(f"Successfully seeded database with {len(SECURITY_KNOWLEDGE)} entries (with dummy embeddings)")
+        engine = create_engine(os.getenv('DATABASE_URL'))
+        Session = sessionmaker(bind=engine)
+        session = Session()
+
+        # Generate dummy embeddings (all zeros) and insert data
+        for knowledge in SECURITY_KNOWLEDGE:
+            # Create a dummy embedding (all zeros)
+            dummy_embedding = np.zeros(1536).tolist()
+            
+            knowledge_entry = SecurityKnowledge(
+                title=knowledge["title"],
+                content=knowledge["content"],
+                category=knowledge["category"],
+                embedding=dummy_embedding
+            )
+            session.add(knowledge_entry)
+        
+        session.commit()
+        print(f"Successfully seeded database with {len(SECURITY_KNOWLEDGE)} entries (with dummy embeddings)")
                 
     except Exception as e:
         print(f"Error seeding database: {e}")
+        session.rollback()
+    finally:
+        session.close()
 
 if __name__ == "__main__":
     seed_database() 

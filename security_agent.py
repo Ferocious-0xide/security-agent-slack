@@ -5,6 +5,7 @@ import os
 from dotenv import load_dotenv
 from database import DatabaseManager
 from models import SeverityLevel
+import asyncio
 
 # Configure logging
 logging.basicConfig(
@@ -23,7 +24,12 @@ class SecurityAgent:
         
         # Initialize components
         self._validate_environment()
-        self.db_manager = DatabaseManager()
+        self.db = DatabaseManager()
+        self.command_handlers = {
+            "search": self._handle_search,
+            "incident": self._handle_incident,
+            "charlotte": self._handle_charlotte
+        }
         
     def _validate_environment(self) -> None:
         """Validate that all required environment variables are set."""
@@ -39,53 +45,93 @@ class SecurityAgent:
         if missing_vars:
             raise EnvironmentError(f"Missing required environment variables: {', '.join(missing_vars)}")
     
-    async def process_slack_command(self, command: Dict) -> Dict:
-        """Process incoming Slack commands."""
+    async def process_slack_command(self, command: str, text: str) -> Dict:
+        """Process a Slack command and return the response."""
         try:
-            logger.info(f"Processing Slack command: {command}")
-            command_text = command.get('text', '').lower()
+            # Split the command text into parts
+            parts = text.strip().split(maxsplit=1)
+            if not parts:
+                return {"error": "No command provided"}
             
-            if command_text.startswith('search'):
-                query = command_text[7:].strip()
-                results = await self.db_manager.search_knowledge(query)
-                return {
-                    "status": "success",
-                    "message": "Search results",
-                    "results": [{"title": r.title, "content": r.content} for r in results]
-                }
-            elif command_text.startswith('incident'):
-                # Parse incident creation command
-                parts = command_text[9:].strip().split('|')
-                if len(parts) >= 3:
-                    title = parts[0].strip()
-                    description = parts[1].strip()
-                    severity = SeverityLevel(parts[2].strip().lower())
-                    
-                    incident = await self.db_manager.create_incident(
-                        title=title,
-                        description=description,
-                        severity=severity
-                    )
-                    
-                    return {
-                        "status": "success",
-                        "message": "Incident created",
-                        "incident_id": incident.id
-                    }
-            elif 'charlotte' in command_text:
-                # Handle Charlotte queries
-                query = command_text.replace('charlotte', '').replace('for', '').strip()
-                results = await self.db_manager.search_knowledge(query)
-                return {
-                    "status": "success",
-                    "message": "Charlotte's response",
-                    "results": [{"title": r.title, "content": r.content} for r in results]
-                }
+            subcommand = parts[0].lower()
+            query = parts[1] if len(parts) > 1 else ""
             
-            return {"status": "error", "message": "Unknown command"}
+            # Handle different command formats
+            if subcommand in self.command_handlers:
+                return await self.command_handlers[subcommand](query)
+            else:
+                # Default behavior: search knowledge base
+                return await self._handle_search(text)
         except Exception as e:
-            logger.error(f"Error processing Slack command: {str(e)}")
-            return {"status": "error", "message": str(e)}
+            logger.error(f"Error processing command: {str(e)}")
+            return {"error": f"Error processing command: {str(e)}"}
+    
+    async def _handle_search(self, query: str) -> Dict:
+        """Handle search command."""
+        try:
+            results = await self.db.search_knowledge(query)
+            if not results:
+                return {"error": "No results found"}
+            return {
+                "success": True,
+                "results": [{"title": r.title, "content": r.content} for r in results]
+            }
+        except Exception as e:
+            logger.error(f"Error in search: {str(e)}")
+            return {"error": f"Error in search: {str(e)}"}
+    
+    async def _handle_incident(self, text: str) -> Dict:
+        """Handle incident creation command."""
+        try:
+            # Parse incident details
+            parts = text.split("|")
+            if len(parts) != 3:
+                return {"error": "Invalid format. Use: /security incident <title> | <description> | <severity>"}
+            
+            title = parts[0].strip()
+            description = parts[1].strip()
+            severity = parts[2].strip().upper()
+            
+            # Validate severity
+            if severity not in SeverityLevel.__members__:
+                return {"error": f"Invalid severity level. Must be one of: {', '.join(SeverityLevel.__members__)}"}
+            
+            # Create incident
+            incident = await self.db.create_incident(
+                title=title,
+                description=description,
+                severity=SeverityLevel[severity]
+            )
+            
+            return {
+                "success": True,
+                "incident_id": incident.id,
+                "message": f"Incident created with ID: {incident.id}"
+            }
+        except Exception as e:
+            logger.error(f"Error creating incident: {str(e)}")
+            return {"error": f"Error creating incident: {str(e)}"}
+    
+    async def _handle_charlotte(self, query: str) -> Dict:
+        """Handle Charlotte AI queries."""
+        try:
+            # For now, just search the knowledge base
+            results = await self.db.search_knowledge(query)
+            if not results:
+                return {"error": "No relevant information found"}
+            
+            # Format response
+            response = "Here's what I found:\n\n"
+            for r in results:
+                response += f"*{r.title}*\n{r.content}\n\n"
+            
+            return {
+                "success": True,
+                "response": response
+            }
+        except Exception as e:
+            logger.error(f"Error in Charlotte query: {str(e)}")
+            return {"error": f"Error in Charlotte query: {str(e)}"}
     
     async def process_slack_event(self, event: Dict) -> Dict:
         """Process incoming Slack events."""
@@ -98,7 +144,7 @@ class SecurityAgent:
                 message = event.get('text', '')
                 if 'security' in message.lower():
                     # Search for relevant knowledge
-                    results = await self.db_manager.search_knowledge(message)
+                    results = await self.db.search_knowledge(message)
                     if results:
                         return {
                             "status": "success",
@@ -115,7 +161,7 @@ class SecurityAgent:
         """Query the security knowledge base."""
         try:
             logger.info(f"Querying knowledge base: {query}")
-            results = await self.db_manager.search_knowledge(query)
+            results = await self.db.search_knowledge(query)
             return [{"title": r.title, "content": r.content} for r in results]
         except Exception as e:
             logger.error(f"Error querying knowledge base: {str(e)}")
@@ -125,16 +171,16 @@ class SecurityAgent:
         """Create a new security incident."""
         try:
             logger.info(f"Creating incident: {incident_data}")
-            incident = await self.db_manager.create_incident(
+            incident = await self.db.create_incident(
                 title=incident_data['title'],
                 description=incident_data['description'],
                 severity=SeverityLevel(incident_data['severity'].lower())
             )
             
             # Search for relevant knowledge
-            results = await self.db_manager.search_knowledge(incident_data['description'])
+            results = await self.db.search_knowledge(incident_data['description'])
             for knowledge in results:
-                await self.db_manager.link_knowledge_to_incident(
+                await self.db.link_knowledge_to_incident(
                     incident_id=incident.id,
                     knowledge_id=knowledge.id,
                     relevance_score=90  # Default score
@@ -151,11 +197,11 @@ class SecurityAgent:
             logger.info(f"Triggering workflow: {workflow_data}")
             incident_id = workflow_data.get('incident_id')
             if incident_id:
-                incident = await self.db_manager.get_incident(incident_id)
+                incident = await self.db.get_incident(incident_id)
                 if incident:
                     # Update incident status based on workflow
                     status = workflow_data.get('status', 'in_progress')
-                    updated_incident = await self.db_manager.update_incident_status(
+                    updated_incident = await self.db.update_incident_status(
                         incident_id=incident_id,
                         status=status
                     )
