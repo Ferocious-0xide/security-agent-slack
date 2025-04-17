@@ -59,13 +59,15 @@ def setup_database():
         # Create incidents table
         logger.info("Creating incidents table...")
         cur.execute("""
-            CREATE TABLE IF NOT EXISTS incidents (
+            DROP TABLE IF EXISTS incidents CASCADE;
+            CREATE TABLE incidents (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                salesforce_id TEXT UNIQUE NOT NULL,
                 title TEXT NOT NULL,
                 description TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'open',
                 severity TEXT NOT NULL DEFAULT 'medium',
-                created_by TEXT NOT NULL,
+                created_by TEXT NOT NULL DEFAULT 'system',
                 assigned_to TEXT,
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
@@ -156,12 +158,14 @@ def setup_database():
         # Create triggers
         logger.info("Creating triggers...")
         cur.execute("""
+            DROP TRIGGER IF EXISTS update_documents_updated_at ON documents;
+            DROP TRIGGER IF EXISTS update_incidents_updated_at ON incidents;
+            
             CREATE TRIGGER update_documents_updated_at
             BEFORE UPDATE ON documents
             FOR EACH ROW
             EXECUTE FUNCTION update_updated_at_column();
-        """)
-        cur.execute("""
+            
             CREATE TRIGGER update_incidents_updated_at
             BEFORE UPDATE ON incidents
             FOR EACH ROW
