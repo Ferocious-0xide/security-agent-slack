@@ -1,6 +1,7 @@
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import text
 from typing import List, Optional
 import logging
 from models import Base, SecurityKnowledge, SecurityIncident, IncidentKnowledgeReference, SeverityLevel
@@ -70,19 +71,61 @@ class DatabaseManager:
     async def search_knowledge(self, query: str, limit: int = 5) -> List[SecurityKnowledge]:
         """Search security knowledge using text search."""
         try:
+            logger.info(f"Starting database search for query: {query}")
             async with self.SessionLocal() as db:
-                # Use simple text search since we're using dummy embeddings
+                logger.info("Database session established")
+                
+                # Split query into words and create a more flexible search pattern
+                words = query.split()
+                search_patterns = [f"%{word}%" for word in words]
+                logger.info(f"Search patterns: {search_patterns}")
+                
+                # Use SQLAlchemy's text() function for raw SQL
+                sql = text("""
+                    SELECT id, title, content, category, embedding, created_at, updated_at 
+                    FROM security_knowledge 
+                    WHERE content ILIKE ANY(:patterns)
+                    ORDER BY created_at DESC
+                    LIMIT :limit
+                """)
+                
+                logger.info("Executing SQL query")
                 results = await db.execute(
-                    f"SELECT * FROM security_knowledge WHERE content ILIKE '%{query}%' LIMIT {limit}"
+                    sql,
+                    {"patterns": search_patterns, "limit": limit}
                 )
                 results = results.fetchall()
+                logger.info(f"Query executed, found {len(results)} rows")
                 
                 if not results:
                     logger.info(f"No results found for query: {query}")
-                else:
-                    logger.info(f"Found {len(results)} results for query: {query}")
+                    return []
                 
-                return [SecurityKnowledge(**dict(row)) for row in results]
+                # Convert results to SecurityKnowledge objects
+                knowledge_results = []
+                for row in results:
+                    try:
+                        logger.info(f"Processing row: {row}")
+                        knowledge = SecurityKnowledge(
+                            id=row[0],
+                            title=row[1],
+                            content=row[2],
+                            category=row[3],
+                            embedding=row[4],
+                            created_at=row[5],
+                            updated_at=row[6]
+                        )
+                        logger.info(f"Created SecurityKnowledge object: {knowledge}")
+                        knowledge_results.append(knowledge)
+                    except Exception as e:
+                        logger.error(f"Error converting row to SecurityKnowledge: {str(e)}")
+                        logger.error(f"Row data: {row}")
+                        logger.error(f"Traceback: {traceback.format_exc()}")
+                        continue
+                
+                logger.info(f"Successfully converted {len(knowledge_results)} results")
+                return knowledge_results
+                
         except SQLAlchemyError as e:
             logger.error(f"Error searching knowledge: {str(e)}")
             logger.error(f"Traceback: {traceback.format_exc()}")
@@ -131,8 +174,14 @@ class DatabaseManager:
         """Get an incident by ID."""
         try:
             async with self.SessionLocal() as db:
+                sql = text("""
+                    SELECT * FROM security_incidents 
+                    WHERE id = :incident_id
+                """)
+                
                 result = await db.execute(
-                    f"SELECT * FROM security_incidents WHERE id = {incident_id}"
+                    sql,
+                    {"incident_id": incident_id}
                 )
                 row = result.fetchone()
                 if row:
@@ -146,10 +195,17 @@ class DatabaseManager:
         """Update an incident's status."""
         try:
             async with self.SessionLocal() as db:
+                sql = text("""
+                    SELECT * FROM security_incidents 
+                    WHERE id = :incident_id
+                """)
+                
                 result = await db.execute(
-                    f"SELECT * FROM security_incidents WHERE id = {incident_id}"
+                    sql,
+                    {"incident_id": incident_id}
                 )
                 incident = result.fetchone()
+                
                 if incident:
                     incident = SecurityIncident(**dict(incident))
                     incident.status = status

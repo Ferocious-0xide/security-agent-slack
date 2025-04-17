@@ -5,7 +5,9 @@ import os
 from dotenv import load_dotenv
 from database import DatabaseManager
 from models import SeverityLevel
+from heroku_ai import HerokuAI
 import asyncio
+import traceback
 
 # Configure logging
 logging.basicConfig(
@@ -21,10 +23,12 @@ class SecurityAgent:
         self.slack_app_token = os.getenv('SLACK_APP_TOKEN')
         self.slack_signing_secret = os.getenv('SLACK_SIGNING_SECRET')
         self.openai_api_key = os.getenv('OPENAI_API_KEY')
+        self.heroku_app_name = os.getenv('HEROKU_APP_NAME')
         
         # Initialize components
         self._validate_environment()
         self.db = DatabaseManager()
+        self.heroku_ai = HerokuAI(self.heroku_app_name)
         self.command_handlers = {
             "search": self._handle_search,
             "incident": self._handle_incident,
@@ -38,7 +42,8 @@ class SecurityAgent:
             'SLACK_APP_TOKEN',
             'SLACK_SIGNING_SECRET',
             'OPENAI_API_KEY',
-            'DATABASE_URL'
+            'DATABASE_URL',
+            'HEROKU_APP_NAME'
         ]
         
         missing_vars = [var for var in required_vars if not os.getenv(var)]
@@ -69,16 +74,71 @@ class SecurityAgent:
     async def _handle_search(self, query: str) -> Dict:
         """Handle search command."""
         try:
+            logger.info(f"Starting search for query: {query}")
             results = await self.db.search_knowledge(query)
+            logger.info(f"Search returned {len(results) if results else 0} results")
+            
             if not results:
                 return {"error": "No results found"}
+            
+            # Format results into a list of dictionaries
+            formatted_results = []
+            for r in results:
+                try:
+                    logger.info(f"Formatting result: {r.title}")
+                    # Generate Claude.ai prompt using Heroku AI
+                    claude_prompt = await self._generate_claude_prompt(r.title, r.content)
+                    
+                    formatted_results.append({
+                        "title": str(r.title),
+                        "content": str(r.content),
+                        "claude_prompt": claude_prompt
+                    })
+                except Exception as e:
+                    logger.error(f"Error formatting result: {str(e)}")
+                    logger.error(f"Result object: {r}")
+                    continue
+            
+            if not formatted_results:
+                return {"error": "Error formatting search results"}
+            
+            logger.info(f"Successfully formatted {len(formatted_results)} results")
             return {
                 "success": True,
-                "results": [{"title": r.title, "content": r.content} for r in results]
+                "results": formatted_results
             }
         except Exception as e:
             logger.error(f"Error in search: {str(e)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return {"error": f"Error in search: {str(e)}"}
+    
+    async def _generate_claude_prompt(self, title: str, content: str) -> str:
+        """Generate a Claude.ai prompt using Heroku AI."""
+        try:
+            # Create the model if it doesn't exist
+            self.heroku_ai.create_model()
+            
+            # Prepare the prompt
+            prompt = f"""Based on the following security knowledge:
+
+Title: {title}
+Content: {content}
+
+Please provide:
+1. A detailed analysis of the security implications
+2. Specific indicators to look for in logs and monitoring systems
+3. Recommended investigation steps
+4. Potential mitigation strategies
+5. Relevant security controls to implement
+
+Format your response in clear sections with bullet points where appropriate."""
+            
+            # Query the model
+            response = self.heroku_ai.query_model(prompt)
+            return response.get("response", "Error generating response")
+        except Exception as e:
+            logger.error(f"Error generating Claude prompt: {str(e)}")
+            return "Error generating analysis"
     
     async def _handle_incident(self, text: str) -> Dict:
         """Handle incident creation command."""

@@ -212,9 +212,12 @@ def seed_database():
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS security_knowledge (
                         id SERIAL PRIMARY KEY,
+                        title TEXT NOT NULL,
                         content TEXT NOT NULL,
+                        category TEXT NOT NULL,
                         embedding vector(1536),
-                        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
                 
@@ -223,8 +226,8 @@ def seed_database():
                     # Create a dummy embedding (all zeros)
                     dummy_embedding = np.zeros(1536).tolist()
                     cur.execute(
-                        "INSERT INTO security_knowledge (content, embedding) VALUES (%s, %s)",
-                        (knowledge, dummy_embedding)
+                        "INSERT INTO security_knowledge (title, content, category, embedding) VALUES (%s, %s, %s, %s)",
+                        (knowledge["title"], knowledge["content"], knowledge["category"], dummy_embedding)
                     )
                 
                 conn.commit()
