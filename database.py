@@ -8,6 +8,7 @@ from openai import OpenAI
 import os
 from dotenv import load_dotenv
 from datetime import datetime
+import traceback
 
 logger = logging.getLogger(__name__)
 
@@ -60,23 +61,23 @@ class DatabaseManager:
             raise
     
     async def search_knowledge(self, query: str, limit: int = 5) -> List[SecurityKnowledge]:
-        """Search security knowledge using vector similarity."""
+        """Search security knowledge using text search."""
         try:
-            # Generate query embedding
-            response = self.openai_client.embeddings.create(
-                model="text-embedding-ada-002",
-                input=query
-            )
-            query_embedding = response.data[0].embedding
-            
             db = next(self.get_db())
-            results = db.query(SecurityKnowledge).order_by(
-                SecurityKnowledge.embedding.cosine_distance(query_embedding)
+            # Use simple text search since we're using dummy embeddings
+            results = db.query(SecurityKnowledge).filter(
+                SecurityKnowledge.content.ilike(f'%{query}%')
             ).limit(limit).all()
+            
+            if not results:
+                logger.info(f"No results found for query: {query}")
+            else:
+                logger.info(f"Found {len(results)} results for query: {query}")
             
             return results
         except SQLAlchemyError as e:
             logger.error(f"Error searching knowledge: {str(e)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
             raise
     
     async def create_incident(self, title: str, description: str, severity: SeverityLevel) -> SecurityIncident:

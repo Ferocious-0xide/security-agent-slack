@@ -7,7 +7,13 @@ import os
 from dotenv import load_dotenv
 from security_agent import SecurityAgent
 import asyncio
+import traceback
 
+# Configure logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 class SlackHandler:
@@ -29,44 +35,55 @@ class SlackHandler:
     
     def _register_handlers(self):
         """Register all Slack event and command handlers."""
-        # Command handlers
-        self.app.command("/security")(self.handle_security_command)
-        
-        # Event handlers
-        self.app.event("message")(self.handle_message)
-        self.app.event("app_mention")(self.handle_app_mention)
-        
-        # Action handlers
-        self.app.action("incident_status")(self.handle_incident_status)
-        self.app.action("knowledge_search")(self.handle_knowledge_search)
+        try:
+            # Command handlers
+            self.app.command("/security")(self.handle_security_command)
+            
+            # Event handlers
+            self.app.event("message")(self.handle_message)
+            self.app.event("app_mention")(self.handle_app_mention)
+            
+            # Action handlers
+            self.app.action("incident_status")(self.handle_incident_status)
+            self.app.action("knowledge_search")(self.handle_knowledge_search)
+        except Exception as e:
+            logger.error(f"Error registering handlers: {str(e)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            raise
     
     def handle_security_command(self, command: Dict[str, Any], ack, say):
         """Handle the /security slash command."""
-        # Acknowledge the command immediately
-        ack()
-        
-        # Run the async operation in a new event loop
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
         try:
-            result = loop.run_until_complete(
-                self.security_agent.process_slack_command(command)
-            )
+            # Acknowledge the command immediately
+            ack()
             
-            if result["status"] == "success":
-                if "results" in result:
-                    # Format search results
-                    blocks = self._format_search_results(result["results"])
-                    loop.run_until_complete(say(blocks=blocks))
+            # Run the async operation in a new event loop
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                result = loop.run_until_complete(
+                    self.security_agent.process_slack_command(command)
+                )
+                
+                if result["status"] == "success":
+                    if "results" in result:
+                        # Format search results
+                        blocks = self._format_search_results(result["results"])
+                        loop.run_until_complete(say(blocks=blocks))
+                    else:
+                        loop.run_until_complete(say(result["message"]))
                 else:
-                    loop.run_until_complete(say(result["message"]))
-            else:
-                loop.run_until_complete(say(f"Error: {result['message']}"))
+                    loop.run_until_complete(say(f"Error: {result['message']}"))
+            except Exception as e:
+                logger.error(f"Error in event loop: {str(e)}")
+                logger.error(f"Traceback: {traceback.format_exc()}")
+                loop.run_until_complete(say("An error occurred while processing your command."))
+            finally:
+                loop.close()
         except Exception as e:
             logger.error(f"Error handling security command: {str(e)}")
-            loop.run_until_complete(say("An error occurred while processing your command."))
-        finally:
-            loop.close()
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            raise
     
     def handle_message(self, event: Dict[str, Any], say):
         """Handle incoming messages."""
