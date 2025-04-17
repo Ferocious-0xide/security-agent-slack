@@ -79,6 +79,7 @@ class SecurityAgent:
             logger.info(f"Search returned {len(results) if results else 0} results")
             
             if not results:
+                logger.info("No results found, returning error message")
                 return {"error": "No results found"}
             
             # Format results into a list of dictionaries
@@ -87,26 +88,32 @@ class SecurityAgent:
                 try:
                     logger.info(f"Formatting result: {r.title}")
                     # Generate Claude.ai prompt using Heroku AI
+                    logger.info("Generating Claude.ai prompt")
                     claude_prompt = await self._generate_claude_prompt(r.title, r.content)
+                    logger.info("Claude.ai prompt generated successfully")
                     
                     formatted_results.append({
                         "title": str(r.title),
                         "content": str(r.content),
                         "claude_prompt": claude_prompt
                     })
+                    logger.info(f"Successfully formatted result: {r.title}")
                 except Exception as e:
                     logger.error(f"Error formatting result: {str(e)}")
                     logger.error(f"Result object: {r}")
                     continue
             
             if not formatted_results:
+                logger.error("No formatted results available")
                 return {"error": "Error formatting search results"}
             
             logger.info(f"Successfully formatted {len(formatted_results)} results")
-            return {
+            response = {
                 "success": True,
                 "results": formatted_results
             }
+            logger.info(f"Returning response with {len(formatted_results)} results")
+            return response
         except Exception as e:
             logger.error(f"Error in search: {str(e)}")
             logger.error(f"Traceback: {traceback.format_exc()}")
@@ -115,9 +122,7 @@ class SecurityAgent:
     async def _generate_claude_prompt(self, title: str, content: str) -> str:
         """Generate a Claude.ai prompt using Heroku AI."""
         try:
-            # Create the model if it doesn't exist
-            self.heroku_ai.create_model()
-            
+            logger.info("Starting Claude.ai prompt generation")
             # Prepare the prompt
             prompt = f"""Based on the following security knowledge:
 
@@ -133,11 +138,21 @@ Please provide:
 
 Format your response in clear sections with bullet points where appropriate."""
             
+            logger.info("Sending prompt to Heroku AI")
             # Query the model
             response = self.heroku_ai.query_model(prompt)
-            return response.get("response", "Error generating response")
+            logger.info("Received response from Heroku AI")
+            
+            if not response:
+                logger.error("No response received from Heroku AI")
+                return "Error generating analysis"
+            
+            result = response.get("response", "Error generating response")
+            logger.info("Successfully generated Claude.ai prompt")
+            return result
         except Exception as e:
             logger.error(f"Error generating Claude prompt: {str(e)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return "Error generating analysis"
     
     async def _handle_incident(self, text: str) -> Dict:
