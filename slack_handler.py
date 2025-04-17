@@ -6,6 +6,7 @@ import logging
 import os
 from dotenv import load_dotenv
 from security_agent import SecurityAgent
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -39,85 +40,128 @@ class SlackHandler:
         self.app.action("incident_status")(self.handle_incident_status)
         self.app.action("knowledge_search")(self.handle_knowledge_search)
     
-    async def handle_security_command(self, command: Dict[str, Any], ack, say):
+    def handle_security_command(self, command: Dict[str, Any], ack, say):
         """Handle the /security slash command."""
-        await ack()
+        # Acknowledge the command immediately
+        ack()
+        
+        # Run the async operation in a new event loop
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         try:
-            result = await self.security_agent.process_slack_command(command)
+            result = loop.run_until_complete(
+                self.security_agent.process_slack_command(command)
+            )
+            
             if result["status"] == "success":
                 if "results" in result:
                     # Format search results
                     blocks = self._format_search_results(result["results"])
-                    await say(blocks=blocks)
+                    loop.run_until_complete(say(blocks=blocks))
                 else:
-                    await say(result["message"])
+                    loop.run_until_complete(say(result["message"]))
             else:
-                await say(f"Error: {result['message']}")
+                loop.run_until_complete(say(f"Error: {result['message']}"))
         except Exception as e:
             logger.error(f"Error handling security command: {str(e)}")
-            await say("An error occurred while processing your command.")
+            loop.run_until_complete(say("An error occurred while processing your command."))
+        finally:
+            loop.close()
     
-    async def handle_message(self, event: Dict[str, Any], say):
+    def handle_message(self, event: Dict[str, Any], say):
         """Handle incoming messages."""
+        # Skip messages from bots
+        if event.get('subtype') == 'bot_message':
+            return
+        
+        # Run the async operation in a new event loop
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         try:
-            # Skip messages from bots
-            if event.get('subtype') == 'bot_message':
-                return
+            result = loop.run_until_complete(
+                self.security_agent.process_slack_event(event)
+            )
             
-            result = await self.security_agent.process_slack_event(event)
             if result["status"] == "success" and "results" in result:
                 blocks = self._format_search_results(result["results"])
-                await say(blocks=blocks)
+                loop.run_until_complete(say(blocks=blocks))
         except Exception as e:
             logger.error(f"Error handling message: {str(e)}")
+        finally:
+            loop.close()
     
-    async def handle_app_mention(self, event: Dict[str, Any], say):
+    def handle_app_mention(self, event: Dict[str, Any], say):
         """Handle when the bot is mentioned."""
+        # Run the async operation in a new event loop
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         try:
             text = event.get('text', '').replace(f"<@{self.client.auth_test()['user_id']}>", "").strip()
             if text:
-                result = await self.security_agent.query_knowledge_base(text)
+                result = loop.run_until_complete(
+                    self.security_agent.query_knowledge_base(text)
+                )
                 if result:
                     blocks = self._format_search_results(result)
-                    await say(blocks=blocks)
+                    loop.run_until_complete(say(blocks=blocks))
         except Exception as e:
             logger.error(f"Error handling app mention: {str(e)}")
-            await say("I encountered an error while processing your request.")
+            loop.run_until_complete(say("I encountered an error while processing your request."))
+        finally:
+            loop.close()
     
-    async def handle_incident_status(self, ack, body, say):
+    def handle_incident_status(self, ack, body, say):
         """Handle incident status updates."""
-        await ack()
+        # Acknowledge the action immediately
+        ack()
+        
+        # Run the async operation in a new event loop
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         try:
             incident_id = body['actions'][0]['value']
             status = body['actions'][0]['selected_option']['value']
             
-            result = await self.security_agent.trigger_workflow({
-                "incident_id": incident_id,
-                "status": status
-            })
+            result = loop.run_until_complete(
+                self.security_agent.trigger_workflow({
+                    "incident_id": incident_id,
+                    "status": status
+                })
+            )
             
             if result["status"] == "success":
-                await say(f"Incident status updated to: {status}")
+                loop.run_until_complete(say(f"Incident status updated to: {status}"))
             else:
-                await say(f"Error updating incident status: {result['message']}")
+                loop.run_until_complete(say(f"Error updating incident status: {result['message']}"))
         except Exception as e:
             logger.error(f"Error handling incident status: {str(e)}")
-            await say("An error occurred while updating the incident status.")
+            loop.run_until_complete(say("An error occurred while updating the incident status."))
+        finally:
+            loop.close()
     
-    async def handle_knowledge_search(self, ack, body, say):
+    def handle_knowledge_search(self, ack, body, say):
         """Handle knowledge search actions."""
-        await ack()
+        # Acknowledge the action immediately
+        ack()
+        
+        # Run the async operation in a new event loop
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         try:
             query = body['actions'][0]['value']
-            results = await self.security_agent.query_knowledge_base(query)
+            results = loop.run_until_complete(
+                self.security_agent.query_knowledge_base(query)
+            )
             if results:
                 blocks = self._format_search_results(results)
-                await say(blocks=blocks)
+                loop.run_until_complete(say(blocks=blocks))
             else:
-                await say("No relevant information found.")
+                loop.run_until_complete(say("No relevant information found."))
         except Exception as e:
             logger.error(f"Error handling knowledge search: {str(e)}")
-            await say("An error occurred while searching the knowledge base.")
+            loop.run_until_complete(say("An error occurred while searching the knowledge base."))
+        finally:
+            loop.close()
     
     def _format_search_results(self, results: list) -> list:
         """Format search results into Slack blocks."""

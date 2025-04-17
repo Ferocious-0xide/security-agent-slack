@@ -72,6 +72,15 @@ class SecurityAgent:
                         "message": "Incident created",
                         "incident_id": incident.id
                     }
+            elif 'charlotte' in command_text:
+                # Handle Charlotte queries
+                query = command_text.replace('charlotte', '').replace('for', '').strip()
+                results = await self.db_manager.search_knowledge(query)
+                return {
+                    "status": "success",
+                    "message": "Charlotte's response",
+                    "results": [{"title": r.title, "content": r.content} for r in results]
+                }
             
             return {"status": "error", "message": "Unknown command"}
         except Exception as e:
