@@ -3,11 +3,10 @@ from security_agent import SecurityAgent
 from slack_handler import SlackHandler
 import os
 from dotenv import load_dotenv
-import traceback
 
 # Configure logging
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
@@ -29,7 +28,6 @@ def main():
         
     except Exception as e:
         logger.error(f"Error starting application: {str(e)}")
-        logger.error(f"Traceback: {traceback.format_exc()}")
         raise
 
 if __name__ == "__main__":

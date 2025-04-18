@@ -5,13 +5,11 @@ import os
 from dotenv import load_dotenv
 from database import DatabaseManager
 from models import SeverityLevel
-from heroku_ai import HerokuAI
-import asyncio
 import traceback
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
@@ -23,17 +21,10 @@ class SecurityAgent:
         self.slack_app_token = os.getenv('SLACK_APP_TOKEN')
         self.slack_signing_secret = os.getenv('SLACK_SIGNING_SECRET')
         self.openai_api_key = os.getenv('OPENAI_API_KEY')
-        self.heroku_app_name = os.getenv('HEROKU_APP_NAME')
         
         # Initialize components
         self._validate_environment()
-        self.db = DatabaseManager()
-        self.heroku_ai = HerokuAI(self.heroku_app_name)
-        self.command_handlers = {
-            "search": self._handle_search,
-            "incident": self._handle_incident,
-            "charlotte": self._handle_charlotte
-        }
+        self.db_manager = DatabaseManager()
         
     def _validate_environment(self) -> None:
         """Validate that all required environment variables are set."""
@@ -42,82 +33,12 @@ class SecurityAgent:
             'SLACK_APP_TOKEN',
             'SLACK_SIGNING_SECRET',
             'OPENAI_API_KEY',
-            'DATABASE_URL',
-            'HEROKU_APP_NAME'
+            'DATABASE_URL'
         ]
         
         missing_vars = [var for var in required_vars if not os.getenv(var)]
         if missing_vars:
             raise EnvironmentError(f"Missing required environment variables: {', '.join(missing_vars)}")
-    
-    async def process_slack_command(self, command: str, text: str) -> Dict:
-        """Process a Slack command and return the response."""
-        try:
-            # Split the command text into parts
-            parts = text.strip().split(maxsplit=1)
-            if not parts:
-                return {"error": "No command provided"}
-            
-            subcommand = parts[0].lower()
-            query = parts[1] if len(parts) > 1 else ""
-            
-            # Handle different command formats
-            if subcommand in self.command_handlers:
-                return await self.command_handlers[subcommand](query)
-            else:
-                # Default behavior: search knowledge base
-                return await self._handle_search(text)
-        except Exception as e:
-            logger.error(f"Error processing command: {str(e)}")
-            return {"error": f"Error processing command: {str(e)}"}
-    
-    async def _handle_search(self, query: str) -> Dict:
-        """Handle search command."""
-        try:
-            logger.info(f"Starting search for query: {query}")
-            results = await self.db.search_knowledge(query)
-            logger.info(f"Search returned {len(results) if results else 0} results")
-            
-            if not results:
-                logger.info("No results found, returning error message")
-                return {"error": "No results found"}
-            
-            # Format results into a list of dictionaries
-            formatted_results = []
-            for r in results:
-                try:
-                    logger.info(f"Formatting result: {r.title}")
-                    # Generate Claude.ai prompt using Heroku AI
-                    logger.info("Generating Claude.ai prompt")
-                    claude_prompt = await self._generate_claude_prompt(r.title, r.content)
-                    logger.info("Claude.ai prompt generated successfully")
-                    
-                    formatted_results.append({
-                        "title": str(r.title),
-                        "content": str(r.content),
-                        "claude_prompt": claude_prompt
-                    })
-                    logger.info(f"Successfully formatted result: {r.title}")
-                except Exception as e:
-                    logger.error(f"Error formatting result: {str(e)}")
-                    logger.error(f"Result object: {r}")
-                    continue
-            
-            if not formatted_results:
-                logger.error("No formatted results available")
-                return {"error": "Error formatting search results"}
-            
-            logger.info(f"Successfully formatted {len(formatted_results)} results")
-            response = {
-                "success": True,
-                "results": formatted_results
-            }
-            logger.info(f"Returning response with {len(formatted_results)} results")
-            return response
-        except Exception as e:
-            logger.error(f"Error in search: {str(e)}")
-            logger.error(f"Traceback: {traceback.format_exc()}")
-            return {"error": f"Error in search: {str(e)}"}
     
     async def _generate_claude_prompt(self, title: str, content: str) -> str:
         """Generate a Claude.ai prompt using Heroku AI."""
@@ -141,13 +62,17 @@ Format your response in clear sections with bullet points where appropriate."""
             logger.info("Sending prompt to Heroku AI")
             # Query the model
             response = self.heroku_ai.query_model(prompt)
-            logger.info("Received response from Heroku AI")
+            logger.info(f"Received response from Heroku AI: {response}")
             
             if not response:
                 logger.error("No response received from Heroku AI")
                 return "Error generating analysis"
-            
+                
             result = response.get("response", "Error generating response")
+            if not result or result == "Error generating response":
+                logger.error("Invalid response format from Heroku AI")
+                return "Error generating analysis"
+                
             logger.info("Successfully generated Claude.ai prompt")
             return result
         except Exception as e:
@@ -155,58 +80,101 @@ Format your response in clear sections with bullet points where appropriate."""
             logger.error(f"Traceback: {traceback.format_exc()}")
             return "Error generating analysis"
     
-    async def _handle_incident(self, text: str) -> Dict:
-        """Handle incident creation command."""
+    async def process_slack_command(self, command: Dict) -> Dict:
+        """Process incoming Slack commands."""
         try:
-            # Parse incident details
-            parts = text.split("|")
-            if len(parts) != 3:
-                return {"error": "Invalid format. Use: /security incident <title> | <description> | <severity>"}
+            logger.info(f"Processing Slack command: {command}")
+            command_text = command.get('text', '').lower()
             
-            title = parts[0].strip()
-            description = parts[1].strip()
-            severity = parts[2].strip().upper()
+            # Handle search queries
+            if 'search' in command_text:
+                # Extract the query by removing 'search' and any surrounding text
+                query = command_text.replace('search', '').replace('the security knowledge base', '').strip()
+                logger.info(f"Search query extracted: '{query}'")
+                results = await self.db_manager.search_knowledge(query)
+                logger.info(f"Search returned {len(results)} results")
+                
+                # Generate Claude.ai prompts for each result
+                enhanced_results = []
+                for result in results:
+                    analysis = await self._generate_claude_prompt(result.title, result.content)
+                    enhanced_results.append({
+                        "title": result.title,
+                        "content": result.content,
+                        "analysis": analysis
+                    })
+                
+                return {
+                    "status": "success",
+                    "message": "Search results",
+                    "results": enhanced_results
+                }
+            elif command_text.startswith('incident'):
+                # Parse incident creation command
+                parts = command_text[9:].strip().split('|')
+                if len(parts) >= 3:
+                    title = parts[0].strip()
+                    description = parts[1].strip()
+                    severity = SeverityLevel(parts[2].strip().lower())
+                    
+                    incident = await self.db_manager.create_incident(
+                        title=title,
+                        description=description,
+                        severity=severity
+                    )
+                    
+                    return {
+                        "status": "success",
+                        "message": "Incident created",
+                        "incident_id": incident.id
+                    }
+            elif 'charlotte' in command_text:
+                # Handle Charlotte queries
+                query = command_text.replace('charlotte', '').replace('for', '').strip()
+                logger.info(f"Charlotte query extracted: '{query}'")
+                results = await self.db_manager.search_knowledge(query)
+                logger.info(f"Charlotte search returned {len(results)} results")
+                
+                # Generate Claude.ai prompts for each result
+                enhanced_results = []
+                for result in results:
+                    analysis = await self._generate_claude_prompt(result.title, result.content)
+                    enhanced_results.append({
+                        "title": result.title,
+                        "content": result.content,
+                        "analysis": analysis
+                    })
+                
+                return {
+                    "status": "success",
+                    "message": "Charlotte's response",
+                    "results": enhanced_results
+                }
             
-            # Validate severity
-            if severity not in SeverityLevel.__members__:
-                return {"error": f"Invalid severity level. Must be one of: {', '.join(SeverityLevel.__members__)}"}
+            # If no specific command is found, treat it as a search query
+            logger.info(f"Treating command as search query: '{command_text}'")
+            results = await self.db_manager.search_knowledge(command_text)
+            logger.info(f"Fallback search returned {len(results)} results")
             
-            # Create incident
-            incident = await self.db.create_incident(
-                title=title,
-                description=description,
-                severity=SeverityLevel[severity]
-            )
+            # Generate Claude.ai prompts for each result
+            enhanced_results = []
+            for result in results:
+                analysis = await self._generate_claude_prompt(result.title, result.content)
+                enhanced_results.append({
+                    "title": result.title,
+                    "content": result.content,
+                    "analysis": analysis
+                })
             
             return {
-                "success": True,
-                "incident_id": incident.id,
-                "message": f"Incident created with ID: {incident.id}"
+                "status": "success",
+                "message": "Search results",
+                "results": enhanced_results
             }
         except Exception as e:
-            logger.error(f"Error creating incident: {str(e)}")
-            return {"error": f"Error creating incident: {str(e)}"}
-    
-    async def _handle_charlotte(self, query: str) -> Dict:
-        """Handle Charlotte AI queries."""
-        try:
-            # For now, just search the knowledge base
-            results = await self.db.search_knowledge(query)
-            if not results:
-                return {"error": "No relevant information found"}
-            
-            # Format response
-            response = "Here's what I found:\n\n"
-            for r in results:
-                response += f"*{r.title}*\n{r.content}\n\n"
-            
-            return {
-                "success": True,
-                "response": response
-            }
-        except Exception as e:
-            logger.error(f"Error in Charlotte query: {str(e)}")
-            return {"error": f"Error in Charlotte query: {str(e)}"}
+            logger.error(f"Error processing Slack command: {str(e)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return {"status": "error", "message": str(e)}
     
     async def process_slack_event(self, event: Dict) -> Dict:
         """Process incoming Slack events."""
@@ -219,7 +187,7 @@ Format your response in clear sections with bullet points where appropriate."""
                 message = event.get('text', '')
                 if 'security' in message.lower():
                     # Search for relevant knowledge
-                    results = await self.db.search_knowledge(message)
+                    results = await self.db_manager.search_knowledge(message)
                     if results:
                         return {
                             "status": "success",
@@ -236,7 +204,7 @@ Format your response in clear sections with bullet points where appropriate."""
         """Query the security knowledge base."""
         try:
             logger.info(f"Querying knowledge base: {query}")
-            results = await self.db.search_knowledge(query)
+            results = await self.db_manager.search_knowledge(query)
             return [{"title": r.title, "content": r.content} for r in results]
         except Exception as e:
             logger.error(f"Error querying knowledge base: {str(e)}")
@@ -246,16 +214,16 @@ Format your response in clear sections with bullet points where appropriate."""
         """Create a new security incident."""
         try:
             logger.info(f"Creating incident: {incident_data}")
-            incident = await self.db.create_incident(
+            incident = await self.db_manager.create_incident(
                 title=incident_data['title'],
                 description=incident_data['description'],
                 severity=SeverityLevel(incident_data['severity'].lower())
             )
             
             # Search for relevant knowledge
-            results = await self.db.search_knowledge(incident_data['description'])
+            results = await self.db_manager.search_knowledge(incident_data['description'])
             for knowledge in results:
-                await self.db.link_knowledge_to_incident(
+                await self.db_manager.link_knowledge_to_incident(
                     incident_id=incident.id,
                     knowledge_id=knowledge.id,
                     relevance_score=90  # Default score
@@ -272,11 +240,11 @@ Format your response in clear sections with bullet points where appropriate."""
             logger.info(f"Triggering workflow: {workflow_data}")
             incident_id = workflow_data.get('incident_id')
             if incident_id:
-                incident = await self.db.get_incident(incident_id)
+                incident = await self.db_manager.get_incident(incident_id)
                 if incident:
                     # Update incident status based on workflow
                     status = workflow_data.get('status', 'in_progress')
-                    updated_incident = await self.db.update_incident_status(
+                    updated_incident = await self.db_manager.update_incident_status(
                         incident_id=incident_id,
                         status=status
                     )
