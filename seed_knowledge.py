@@ -1,60 +1,120 @@
 import os
+import logging
+import argparse
 from dotenv import load_dotenv
+from database import DatabaseManager
+from heroku_inference import InferenceClient
 import psycopg2
 from psycopg2.extras import execute_values
-import anthropic
-from mock_charlotte import get_db_connection, get_embedding
 
-load_dotenv()
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Initial security knowledge base
+# Security knowledge entries
 SECURITY_KNOWLEDGE = [
-    "For suspicious process creation events, first identify the parent process and command line arguments. Check for unusual paths, unexpected parent-child relationships, and any associated network connections.",
-    
-    "When investigating potential data exfiltration, analyze network traffic patterns, focusing on unusual destinations, large data transfers, and unexpected protocols. Review DNS queries and SSL/TLS certificate information.",
-    
-    "Critical security alerts for junior analysts should focus on: 1) Failed authentication attempts, 2) Malware detections, 3) Suspicious PowerShell or command line activity, 4) Unusual service creations.",
-    
-    "Best practices for lateral movement investigation include: monitoring for remote administration tool usage, analyzing authentication logs across systems, identifying unusual account behavior, and mapping network connections between hosts.",
-    
-    "Common indicators of compromise include: unexpected outbound connections, unusual process hierarchy, modification of system files, creation of scheduled tasks, and changes to startup registry keys.",
-    
-    "When analyzing potential ransomware activity, look for: mass file modifications, suspicious encryption processes, deletion of volume shadow copies, and attempts to disable security tools.",
-    
-    "For privilege escalation investigation, focus on: new service creation, scheduled task modification, unusual process elevation, and unexpected admin group changes.",
-    
-    "Network security monitoring should prioritize: unusual protocol usage, large data transfers to unknown destinations, DNS tunneling attempts, and encrypted traffic to uncommon destinations."
+    {
+        "title": "Data Exfiltration Prevention",
+        "content": "Implement network segmentation, monitor data transfers, and use DLP tools to prevent unauthorized data exfiltration.",
+        "category": "Data Security"
+    },
+    {
+        "title": "Phishing Detection",
+        "content": "Train employees to recognize phishing attempts, implement email filtering, and use multi-factor authentication.",
+        "category": "Email Security"
+    },
+    {
+        "title": "Endpoint Protection",
+        "content": "Deploy antivirus software, enable firewalls, and keep systems updated to protect endpoints from malware.",
+        "category": "Endpoint Security"
+    },
+    {
+        "title": "Incident Response",
+        "content": "Follow incident response procedures: identify, contain, eradicate, recover, and learn from security incidents.",
+        "category": "Incident Response"
+    },
+    {
+        "title": "Access Control",
+        "content": "Implement least privilege access, use role-based access control, and regularly review permissions.",
+        "category": "Access Management"
+    },
+    {
+        "title": "Vulnerability Management",
+        "content": "Regularly scan for vulnerabilities, prioritize patching, and maintain an asset inventory.",
+        "category": "Vulnerability Management"
+    },
+    {
+        "title": "Security Monitoring",
+        "content": "Deploy SIEM tools, monitor logs, and set up alerts for suspicious activities.",
+        "category": "Monitoring"
+    },
+    {
+        "title": "Compliance Management",
+        "content": "Maintain compliance with relevant regulations, document controls, and conduct regular audits.",
+        "category": "Compliance"
+    }
 ]
 
-def seed_database():
-    """Populate the database with initial security knowledge"""
+def seed_database(cohere_key: str, anthropic_key: str = None):
+    """Seed the database with initial security knowledge."""
     try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                # Enable pgvector extension and create table if not exists
-                cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS security_knowledge (
-                        id SERIAL PRIMARY KEY,
-                        content TEXT NOT NULL,
-                        embedding vector(1536),
-                        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-                    )
-                """)
-                
-                # Generate embeddings and insert data
-                for knowledge in SECURITY_KNOWLEDGE:
-                    embedding = get_embedding(knowledge)
-                    cur.execute(
-                        "INSERT INTO security_knowledge (content, embedding) VALUES (%s, %s)",
-                        (knowledge, embedding)
-                    )
-                
-                conn.commit()
-                print(f"Successfully seeded database with {len(SECURITY_KNOWLEDGE)} entries")
-                
+        # Initialize Heroku Inference client
+        inference_client = InferenceClient(cohere_key=cohere_key, anthropic_key=anthropic_key)
+        
+        # Connect to database
+        load_dotenv()
+        db_url = os.getenv('DATABASE_URL')
+        if not db_url:
+            raise ValueError("DATABASE_URL environment variable not set")
+        
+        conn = psycopg2.connect(db_url)
+        cur = conn.cursor()
+        
+        # Create table if not exists
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS security_knowledge (
+                id SERIAL PRIMARY KEY,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                category TEXT NOT NULL,
+                embedding vector(1024)
+            )
+        """)
+        
+        # Generate embeddings and insert data
+        for knowledge in SECURITY_KNOWLEDGE:
+            # Generate embedding using Cohere
+            embedding = inference_client.embeddings_create(
+                model="embed-english-v3.0",
+                texts=[knowledge["content"]]
+            )[0]
+            
+            # Insert knowledge with embedding
+            cur.execute("""
+                INSERT INTO security_knowledge (title, content, category, embedding)
+                VALUES (%s, %s, %s, %s)
+            """, (knowledge["title"], knowledge["content"], knowledge["category"], embedding))
+        
+        conn.commit()
+        logger.info("Database seeded successfully")
+        
     except Exception as e:
-        print(f"Error seeding database: {e}")
+        logger.error(f"Error seeding database: {str(e)}")
+        raise
+    finally:
+        if 'cur' in locals():
+            cur.close()
+        if 'conn' in locals():
+            conn.close()
 
 if __name__ == "__main__":
-    seed_database() 
+    parser = argparse.ArgumentParser(description='Seed the database with security knowledge.')
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument('--api-key', help='API key (for backward compatibility)')
+    group.add_argument('--cohere-key', help='Cohere API key')
+    parser.add_argument('--anthropic-key', help='Anthropic API key (optional)')
+    args = parser.parse_args()
+    
+    # Use either api-key or cohere-key
+    cohere_key = args.api_key or args.cohere_key
+    seed_database(cohere_key, args.anthropic_key) 

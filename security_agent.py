@@ -6,6 +6,8 @@ from dotenv import load_dotenv
 from database import DatabaseManager
 from models import SeverityLevel
 import traceback
+import asyncio
+import anthropic
 
 # Configure logging
 logging.basicConfig(
@@ -21,6 +23,7 @@ class SecurityAgent:
         self.slack_app_token = os.getenv('SLACK_APP_TOKEN')
         self.slack_signing_secret = os.getenv('SLACK_SIGNING_SECRET')
         self.openai_api_key = os.getenv('OPENAI_API_KEY')
+        self.anthropic_api_key = os.getenv('ANTHROPIC_API_KEY')
         
         # Initialize components
         self._validate_environment()
@@ -33,6 +36,7 @@ class SecurityAgent:
             'SLACK_APP_TOKEN',
             'SLACK_SIGNING_SECRET',
             'OPENAI_API_KEY',
+            'ANTHROPIC_API_KEY',
             'DATABASE_URL'
         ]
         
@@ -80,7 +84,71 @@ Format your response in clear sections with bullet points where appropriate."""
             logger.error(f"Traceback: {traceback.format_exc()}")
             return "Error generating analysis"
     
-    async def process_slack_command(self, command: Dict) -> Dict:
+    def _generate_guidance_prompt(self, title: str, content: str) -> str:
+        """Generate a specific guidance prompt based on the knowledge article."""
+        # Determine incident type from title
+        incident_type = ""
+        if "data exfiltration" in title.lower():
+            incident_type = "data exfiltration"
+        elif "privilege escalation" in title.lower():
+            incident_type = "privilege escalation"
+        elif "ransomware" in title.lower():
+            incident_type = "ransomware"
+        elif "lateral movement" in title.lower():
+            incident_type = "lateral movement"
+        elif "network" in title.lower():
+            incident_type = "suspicious network activity"
+        else:
+            incident_type = "security"
+
+        return f"""You are an expert security incident advisor responding to a potential {incident_type} incident. 
+
+You have access to our security knowledge base that says:
+---
+{content}
+---
+
+Through MCP, you also have access to:
+- Current system logs related to this incident
+- Historical incident response data
+- Our organization's security posture metrics
+
+Based on this contextual information, please provide:
+
+1. Your assessment of what's happening in natural, conversational language
+2. Multiple investigation angles to consider, including both obvious and non-obvious paths
+3. Specific artifacts we should collect and tools to use
+4. Containment measures appropriate for our environment
+5. How this incident might connect to larger attack patterns we should be aware of
+
+Your guidance should help our analysts make informed decisions quickly while maintaining a comprehensive security perspective."""
+
+    def _get_claude_guidance(self, title: str, content: str) -> str:
+        """Get guidance from Claude for a specific knowledge article."""
+        try:
+            logger.info("Generating guidance prompt...")
+            prompt = self._generate_guidance_prompt(title, content)
+            
+            logger.info("Creating Anthropic client...")
+            client = anthropic.Client(self.anthropic_api_key)
+            
+            logger.info("Sending request to Claude...")
+            response = client.completion(
+                prompt=f"{anthropic.HUMAN_PROMPT} {prompt}{anthropic.AI_PROMPT}",
+                model="claude-3-7-sonnet-20250219",
+                max_tokens_to_sample=4096,
+                temperature=0,
+            )
+            
+            logger.info("Received response from Claude")
+            return response.completion
+            
+        except Exception as e:
+            logger.error(f"Error getting Claude guidance: {str(e)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return f"Error: {str(e)}"
+
+    def process_slack_command(self, command: Dict) -> Dict:
         """Process incoming Slack commands."""
         try:
             logger.info(f"Processing Slack command: {command}")
@@ -91,23 +159,24 @@ Format your response in clear sections with bullet points where appropriate."""
                 # Extract the query by removing 'search' and any surrounding text
                 query = command_text.replace('search', '').replace('the security knowledge base', '').strip()
                 logger.info(f"Search query extracted: '{query}'")
-                results = await self.db_manager.search_knowledge(query)
+                results = self.db_manager.search_knowledge(query)
                 logger.info(f"Search returned {len(results)} results")
                 
-                # Generate Claude.ai prompts for each result
-                enhanced_results = []
-                for result in results:
-                    analysis = await self._generate_claude_prompt(result.title, result.content)
-                    enhanced_results.append({
-                        "title": result.title,
-                        "content": result.content,
-                        "analysis": analysis
+                formatted_results = []
+                for r in results:
+                    # Get guidance from Claude for this knowledge article
+                    guidance = asyncio.run(self._get_claude_guidance(r.title, r.content))
+                    
+                    formatted_results.append({
+                        "title": r.title,
+                        "content": r.content,
+                        "guidance": guidance
                     })
                 
                 return {
                     "status": "success",
-                    "message": "Search results",
-                    "results": enhanced_results
+                    "message": "🔍 Security Knowledge Search Results",
+                    "results": formatted_results
                 }
             elif command_text.startswith('incident'):
                 # Parse incident creation command
@@ -117,7 +186,7 @@ Format your response in clear sections with bullet points where appropriate."""
                     description = parts[1].strip()
                     severity = SeverityLevel(parts[2].strip().lower())
                     
-                    incident = await self.db_manager.create_incident(
+                    incident = self.db_manager.create_incident(
                         title=title,
                         description=description,
                         severity=severity
@@ -125,51 +194,60 @@ Format your response in clear sections with bullet points where appropriate."""
                     
                     return {
                         "status": "success",
-                        "message": "Incident created",
+                        "message": "🚨 Incident created",
                         "incident_id": incident.id
                     }
             elif 'charlotte' in command_text:
                 # Handle Charlotte queries
-                query = command_text.replace('charlotte', '').replace('for', '').strip()
+                query = command_text.replace('charlotte', '').strip()
                 logger.info(f"Charlotte query extracted: '{query}'")
-                results = await self.db_manager.search_knowledge(query)
+                results = self.db_manager.search_knowledge(query)
                 logger.info(f"Charlotte search returned {len(results)} results")
                 
-                # Generate Claude.ai prompts for each result
-                enhanced_results = []
-                for result in results:
-                    analysis = await self._generate_claude_prompt(result.title, result.content)
-                    enhanced_results.append({
-                        "title": result.title,
-                        "content": result.content,
-                        "analysis": analysis
-                    })
+                if not results:
+                    return {
+                        "status": "success",
+                        "message": "No relevant knowledge found for your query."
+                    }
+                
+                # Get the first most relevant result
+                result = results[0]
+                analysis = asyncio.run(self._generate_claude_prompt(result.title, result.content))
                 
                 return {
                     "status": "success",
-                    "message": "Charlotte's response",
-                    "results": enhanced_results
+                    "message": "🤖 Charlotte's Analysis",
+                    "results": [{
+                        "title": result.title,
+                        "content": result.content,
+                        "analysis": analysis
+                    }]
                 }
             
             # If no specific command is found, treat it as a search query
             logger.info(f"Treating command as search query: '{command_text}'")
-            results = await self.db_manager.search_knowledge(command_text)
+            results = self.db_manager.search_knowledge(command_text)
             logger.info(f"Fallback search returned {len(results)} results")
             
-            # Generate Claude.ai prompts for each result
-            enhanced_results = []
-            for result in results:
-                analysis = await self._generate_claude_prompt(result.title, result.content)
-                enhanced_results.append({
-                    "title": result.title,
-                    "content": result.content,
-                    "analysis": analysis
+            formatted_results = []
+            for r in results:
+                guidance_prompt = f"""Based on this {r.title.lower()} knowledge:
+1. What specific indicators should I look for?
+2. Which logs or data sources should I analyze?
+3. What tools or commands would be most helpful?
+4. What are the potential impact scenarios?
+5. What mitigation steps should I consider?"""
+                
+                formatted_results.append({
+                    "title": r.title,
+                    "content": r.content,
+                    "guidance_prompt": guidance_prompt
                 })
             
             return {
                 "status": "success",
-                "message": "Search results",
-                "results": enhanced_results
+                "message": "🔍 Security Knowledge Search Results",
+                "results": formatted_results
             }
         except Exception as e:
             logger.error(f"Error processing Slack command: {str(e)}")

@@ -53,42 +53,27 @@ class SlackHandler:
             logger.error(f"Traceback: {traceback.format_exc()}")
             raise
     
-    def handle_security_command(self, command: Dict[str, Any], ack, say):
+    def handle_security_command(self, command: Dict[str, Any], ack, respond):
         """Handle the /security slash command."""
+        # Acknowledge the command immediately
+        ack()
+        
         try:
-            # Acknowledge the command immediately
-            ack()
+            # Process the command synchronously
+            result = self.security_agent.process_slack_command(command)
             
-            # Log the command details
-            logger.info(f"Received security command: {command}")
-            
-            # Run the async operation in a new event loop
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                result = loop.run_until_complete(
-                    self.security_agent.process_slack_command(command)
-                )
-                
-                if result["status"] == "success":
-                    if "results" in result:
-                        # Format search results
-                        blocks = self._format_search_results(result["results"])
-                        loop.run_until_complete(say(blocks=blocks))
-                    else:
-                        loop.run_until_complete(say(result["message"]))
+            if result["status"] == "success":
+                if "results" in result:
+                    # Format search results
+                    blocks = self._format_search_results(result["results"])
+                    respond(blocks=blocks)
                 else:
-                    loop.run_until_complete(say(f"Error: {result['message']}"))
-            except Exception as e:
-                logger.error(f"Error in event loop: {str(e)}")
-                logger.error(f"Traceback: {traceback.format_exc()}")
-                loop.run_until_complete(say("An error occurred while processing your command."))
-            finally:
-                loop.close()
+                    respond(result["message"])
+            else:
+                respond(f"Error: {result['message']}")
         except Exception as e:
             logger.error(f"Error handling security command: {str(e)}")
-            logger.error(f"Traceback: {traceback.format_exc()}")
-            raise
+            respond("An error occurred while processing your command.")
     
     def handle_message(self, event: Dict[str, Any], say):
         """Handle incoming messages."""
@@ -192,7 +177,7 @@ class SlackHandler:
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": "*Search Results*"
+                    "text": "*Security Knowledge Results* 🔍"
                 }
             }
         ]
@@ -210,6 +195,16 @@ class SlackHandler:
                     }
                 }
             ])
+            
+            # Add Claude's guidance if present
+            if 'guidance' in result:
+                blocks.append({
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": "*Expert Guidance:*\n" + result['guidance']
+                    }
+                })
         
         return blocks
     

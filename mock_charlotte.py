@@ -3,7 +3,8 @@ from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
-import openai
+import anthropic
+from sentence_transformers import SentenceTransformer
 from datetime import datetime
 import logging
 import json
@@ -30,17 +31,21 @@ load_dotenv()
 
 # Debug environment variables
 logger.info("Checking environment variables...")
-api_key = os.getenv("OPENAI_API_KEY")
+api_key = os.getenv("ANTHROPIC_API_KEY")
 if not api_key:
-    logger.error("OPENAI_API_KEY not found in environment variables")
+    logger.error("ANTHROPIC_API_KEY not found in environment variables")
     logger.info("Current environment variables:")
-    for key in ["OPENAI_API_KEY", "DATABASE_URL", "CHARLOTTE_SERVICE_KEY"]:
+    for key in ["ANTHROPIC_API_KEY", "DATABASE_URL", "CHARLOTTE_SERVICE_KEY"]:
         logger.info(f"{key}: {'Set' if os.getenv(key) else 'Not set'}")
-    raise ValueError("OPENAI_API_KEY must be set in environment variables")
+    raise ValueError("ANTHROPIC_API_KEY must be set in environment variables")
 
-# Initialize OpenAI client with minimal configuration
-openai_client = openai.OpenAI(api_key=api_key)
-logger.info("OpenAI client initialized successfully")
+# Initialize Anthropic client
+anthropic_client = anthropic.Client(api_key=api_key)
+logger.info("Anthropic client initialized successfully")
+
+# Initialize sentence-transformers model
+embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+logger.info("Sentence-transformers model initialized successfully")
 
 # Initialize FastAPI app
 app = FastAPI(title="Mock Charlotte RAG Service")
@@ -112,13 +117,9 @@ class StatusUpdate(BaseModel):
 
 # Helper functions
 def get_embedding(text: str) -> List[float]:
-    """Get embedding for text using OpenAI."""
+    """Get embedding for text using sentence-transformers."""
     try:
-        response = openai_client.embeddings.create(
-            model="text-embedding-3-small",
-            input=text
-        )
-        return response.data[0].embedding
+        return embedding_model.encode(text).tolist()
     except Exception as e:
         logger.error(f"Embedding generation error: {e}")
         raise HTTPException(status_code=500, detail="Failed to generate embedding")
@@ -196,18 +197,16 @@ async def chat_completions(query: Query, request: Request):
         # Format context
         context = "\n\n".join([f"Title: {r['title']}\nContent: {r['content']}" for r in results])
         
-        # Generate response
+        # Generate response using Claude
         try:
-            completion = openai_client.chat.completions.create(
-                model="gpt-4-turbo-preview",
-                messages=[
-                    {"role": "system", "content": "You are a security analyst assistant. Provide detailed, accurate analysis based on the context."},
-                    {"role": "user", "content": f"Context:\n{context}\n\nQuery: {query.query}"}
-                ],
-                max_tokens=query.max_tokens
+            completion = anthropic_client.completion(
+                prompt=f"{anthropic.HUMAN_PROMPT} Context:\n{context}\n\nQuery: {query.query}{anthropic.AI_PROMPT}",
+                model="claude-3-sonnet-20240229",
+                max_tokens_to_sample=query.max_tokens,
+                temperature=0,
             )
             
-            answer = completion.choices[0].message.content
+            answer = completion.completion
             confidence = min(1.0, len(context) / 1000)  # Simple confidence metric
             
             return Response(
@@ -218,7 +217,7 @@ async def chat_completions(query: Query, request: Request):
             )
             
         except Exception as e:
-            logger.error(f"OpenAI API error: {e}")
+            logger.error(f"Anthropic API error: {e}")
             raise HTTPException(status_code=500, detail="Failed to generate response")
 
     except HTTPException:
@@ -361,18 +360,22 @@ async def get_status():
                 last_updated=datetime.now().isoformat()
             ))
         
-        # Check OpenAI API
+        # Check Anthropic API
         try:
-            openai_client.models.list()
+            anthropic_client.completion(
+                prompt=f"{anthropic.HUMAN_PROMPT} Hi{anthropic.AI_PROMPT}",
+                model="claude-3-sonnet-20240229",
+                max_tokens_to_sample=10,
+            )
             components.append(StatusUpdate(
-                component="openai",
+                component="anthropic",
                 status="operational",
                 message="API responding",
                 last_updated=datetime.now().isoformat()
             ))
         except Exception as e:
             components.append(StatusUpdate(
-                component="openai",
+                component="anthropic",
                 status="error",
                 message=str(e),
                 last_updated=datetime.now().isoformat()

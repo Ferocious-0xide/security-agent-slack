@@ -4,24 +4,30 @@ from sqlalchemy.exc import SQLAlchemyError
 from typing import List, Optional
 import logging
 from models import Base, SecurityKnowledge, SecurityIncident, IncidentKnowledgeReference, SeverityLevel
-from openai import OpenAI
+from heroku_inference import InferenceClient
 import os
 from dotenv import load_dotenv
 from datetime import datetime
 import traceback
+from sqlalchemy import or_
 
 logger = logging.getLogger(__name__)
 
 class DatabaseManager:
     def __init__(self):
+        """Initialize the database manager."""
         load_dotenv()
-        self.database_url = os.getenv('DATABASE_URL')
-        if not self.database_url:
-            raise ValueError("DATABASE_URL environment variable is not set")
         
-        self.engine = create_engine(self.database_url)
+        # Initialize Heroku Inference client
+        self.inference_client = InferenceClient()
+        
+        # Get database URL from environment
+        db_url = os.getenv('DATABASE_URL')
+        if not db_url:
+            raise ValueError("DATABASE_URL environment variable not set")
+        
+        self.engine = create_engine(db_url)
         self.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
-        self.openai_client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
         
     def init_db(self):
         """Initialize the database by creating all tables."""
@@ -35,15 +41,14 @@ class DatabaseManager:
         finally:
             db.close()
     
-    async def add_security_knowledge(self, title: str, content: str, category: str) -> SecurityKnowledge:
-        """Add new security knowledge with vector embedding."""
+    def add_security_knowledge(self, title: str, content: str, category: str) -> Optional[SecurityKnowledge]:
+        """Add new security knowledge to the database."""
         try:
-            # Generate embedding using OpenAI
-            response = self.openai_client.embeddings.create(
-                model="text-embedding-ada-002",
-                input=content
-            )
-            embedding = response.data[0].embedding
+            # Generate embedding using Cohere
+            embedding = self.inference_client.embeddings_create(
+                model="cohere/embed-english-v3.0",
+                texts=[content]
+            )[0]
             
             db = next(self.get_db())
             knowledge = SecurityKnowledge(
@@ -60,27 +65,44 @@ class DatabaseManager:
             logger.error(f"Error adding security knowledge: {str(e)}")
             raise
     
-    async def search_knowledge(self, query: str, limit: int = 5) -> List[SecurityKnowledge]:
-        """Search security knowledge using text search."""
+    def search_knowledge(self, query: str, limit: int = 5) -> List[SecurityKnowledge]:
+        """Search security knowledge using vector similarity."""
         try:
+            # Generate query embedding using Cohere
+            query_embedding = self.inference_client.embeddings_create(
+                model="cohere/embed-english-v3.0",
+                texts=[query]
+            )[0]
+
+            # Search for similar knowledge entries
             db = next(self.get_db())
-            # Use simple text search since we're using dummy embeddings
-            results = db.query(SecurityKnowledge).filter(
-                SecurityKnowledge.content.ilike(f'%{query}%')
-            ).limit(limit).all()
+            cursor = db.cursor()
+            cursor.execute("""
+                SELECT id, title, content, category, embedding,
+                       (embedding <=> %s) as distance
+                FROM security_knowledge
+                ORDER BY distance ASC
+                LIMIT %s
+            """, (query_embedding, limit))
             
-            if not results:
-                logger.info(f"No results found for query: {query}")
-            else:
-                logger.info(f"Found {len(results)} results for query: {query}")
+            results = []
+            for row in cursor.fetchall():
+                knowledge = SecurityKnowledge(
+                    id=row[0],
+                    title=row[1],
+                    content=row[2],
+                    category=row[3],
+                    embedding=row[4]
+                )
+                results.append(knowledge)
             
             return results
-        except SQLAlchemyError as e:
-            logger.error(f"Error searching knowledge: {str(e)}")
-            logger.error(f"Traceback: {traceback.format_exc()}")
-            raise
+
+        except Exception as e:
+            logging.error(f"Error searching knowledge: {str(e)}")
+            return []
     
-    async def create_incident(self, title: str, description: str, severity: SeverityLevel) -> SecurityIncident:
+    def create_incident(self, title: str, description: str, severity: SeverityLevel) -> SecurityIncident:
         """Create a new security incident."""
         try:
             db = next(self.get_db())
@@ -97,7 +119,7 @@ class DatabaseManager:
             logger.error(f"Error creating incident: {str(e)}")
             raise
     
-    async def link_knowledge_to_incident(
+    def link_knowledge_to_incident(
         self, 
         incident_id: int, 
         knowledge_id: int, 
@@ -119,7 +141,7 @@ class DatabaseManager:
             logger.error(f"Error linking knowledge to incident: {str(e)}")
             raise
     
-    async def get_incident(self, incident_id: int) -> Optional[SecurityIncident]:
+    def get_incident(self, incident_id: int) -> Optional[SecurityIncident]:
         """Get an incident by ID."""
         try:
             db = next(self.get_db())
@@ -128,7 +150,7 @@ class DatabaseManager:
             logger.error(f"Error getting incident: {str(e)}")
             raise
     
-    async def update_incident_status(self, incident_id: int, status: str) -> SecurityIncident:
+    def update_incident_status(self, incident_id: int, status: str) -> SecurityIncident:
         """Update an incident's status."""
         try:
             db = next(self.get_db())
