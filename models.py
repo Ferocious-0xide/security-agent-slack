@@ -20,7 +20,7 @@ class SecurityKnowledge(Base):
     title = Column(String(255), nullable=False)
     content = Column(Text, nullable=False)
     category = Column(String(100), nullable=False)
-    embedding = Column(Vector(1536))  # OpenAI embedding dimension
+    embedding = Column(Vector(1024))  # Cohere embedding dimension
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     

@@ -74,32 +74,35 @@ class DatabaseManager:
                 texts=[query]
             )[0]
 
-            # Search for similar knowledge entries
+            # Search for similar knowledge entries using SQLAlchemy
             db = next(self.get_db())
-            cursor = db.cursor()
-            cursor.execute("""
-                SELECT id, title, content, category, embedding,
-                       (embedding <=> %s) as distance
-                FROM security_knowledge
-                ORDER BY distance ASC
-                LIMIT %s
-            """, (query_embedding, limit))
+            results = db.query(
+                SecurityKnowledge.id,
+                SecurityKnowledge.title,
+                SecurityKnowledge.content,
+                SecurityKnowledge.category,
+                SecurityKnowledge.embedding
+            ).order_by(
+                SecurityKnowledge.embedding.l2_distance(query_embedding)
+            ).limit(limit).all()
             
-            results = []
-            for row in cursor.fetchall():
+            # Convert results to SecurityKnowledge objects
+            knowledge_results = []
+            for r in results:
                 knowledge = SecurityKnowledge(
-                    id=row[0],
-                    title=row[1],
-                    content=row[2],
-                    category=row[3],
-                    embedding=row[4]
+                    id=r.id,
+                    title=r.title,
+                    content=r.content,
+                    category=r.category,
+                    embedding=r.embedding
                 )
-                results.append(knowledge)
+                knowledge_results.append(knowledge)
             
-            return results
+            return knowledge_results
 
         except Exception as e:
             logging.error(f"Error searching knowledge: {str(e)}")
+            logging.error(f"Traceback: {traceback.format_exc()}")
             return []
     
     def create_incident(self, title: str, description: str, severity: SeverityLevel) -> SecurityIncident:

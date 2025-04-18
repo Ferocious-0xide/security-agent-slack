@@ -43,14 +43,16 @@ def setup_database():
         cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
         cur.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
         
-        # Create documents table for RAG
-        logger.info("Creating documents table...")
+        # Create security_knowledge table
+        logger.info("Creating security_knowledge table...")
         cur.execute("""
-            CREATE TABLE IF NOT EXISTS documents (
+            DROP TABLE IF EXISTS security_knowledge CASCADE;
+            CREATE TABLE security_knowledge (
                 id SERIAL PRIMARY KEY,
                 title TEXT NOT NULL,
                 content TEXT NOT NULL,
-                embedding vector(1536),
+                category TEXT NOT NULL,
+                embedding vector(1024),
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
             )
@@ -123,8 +125,8 @@ def setup_database():
         # Create indexes
         logger.info("Creating indexes...")
         cur.execute("""
-            CREATE INDEX IF NOT EXISTS documents_embedding_idx 
-            ON documents USING ivfflat (embedding vector_cosine_ops)
+            CREATE INDEX IF NOT EXISTS security_knowledge_embedding_idx 
+            ON security_knowledge USING ivfflat (embedding vector_cosine_ops)
         """)
         cur.execute("""
             CREATE INDEX IF NOT EXISTS incidents_status_idx 
@@ -158,11 +160,11 @@ def setup_database():
         # Create triggers
         logger.info("Creating triggers...")
         cur.execute("""
-            DROP TRIGGER IF EXISTS update_documents_updated_at ON documents;
+            DROP TRIGGER IF EXISTS update_security_knowledge_updated_at ON security_knowledge;
             DROP TRIGGER IF EXISTS update_incidents_updated_at ON incidents;
             
-            CREATE TRIGGER update_documents_updated_at
-            BEFORE UPDATE ON documents
+            CREATE TRIGGER update_security_knowledge_updated_at
+            BEFORE UPDATE ON security_knowledge
             FOR EACH ROW
             EXECUTE FUNCTION update_updated_at_column();
             
@@ -185,21 +187,46 @@ def setup_database():
 
 # Initial security knowledge base
 SECURITY_KNOWLEDGE = [
-    "For suspicious process creation events, first identify the parent process and command line arguments. Check for unusual paths, unexpected parent-child relationships, and any associated network connections.",
-    
-    "When investigating potential data exfiltration, analyze network traffic patterns, focusing on unusual destinations, large data transfers, and unexpected protocols. Review DNS queries and SSL/TLS certificate information.",
-    
-    "Critical security alerts for junior analysts should focus on: 1) Failed authentication attempts, 2) Malware detections, 3) Suspicious PowerShell or command line activity, 4) Unusual service creations.",
-    
-    "Best practices for lateral movement investigation include: monitoring for remote administration tool usage, analyzing authentication logs across systems, identifying unusual account behavior, and mapping network connections between hosts.",
-    
-    "Common indicators of compromise include: unexpected outbound connections, unusual process hierarchy, modification of system files, creation of scheduled tasks, and changes to startup registry keys.",
-    
-    "When analyzing potential ransomware activity, look for: mass file modifications, suspicious encryption processes, deletion of volume shadow copies, and attempts to disable security tools.",
-    
-    "For privilege escalation investigation, focus on: new service creation, scheduled task modification, unusual process elevation, and unexpected admin group changes.",
-    
-    "Network security monitoring should prioritize: unusual protocol usage, large data transfers to unknown destinations, DNS tunneling attempts, and encrypted traffic to uncommon destinations."
+    {
+        "title": "Suspicious Process Creation",
+        "content": "For suspicious process creation events, first identify the parent process and command line arguments. Check for unusual paths, unexpected parent-child relationships, and any associated network connections.",
+        "category": "Process Analysis"
+    },
+    {
+        "title": "Data Exfiltration Investigation",
+        "content": "When investigating potential data exfiltration, analyze network traffic patterns, focusing on unusual destinations, large data transfers, and unexpected protocols. Review DNS queries and SSL/TLS certificate information.",
+        "category": "Network Security"
+    },
+    {
+        "title": "Critical Security Alerts",
+        "content": "Critical security alerts for junior analysts should focus on: 1) Failed authentication attempts, 2) Malware detections, 3) Suspicious PowerShell or command line activity, 4) Unusual service creations.",
+        "category": "Security Operations"
+    },
+    {
+        "title": "Lateral Movement Investigation",
+        "content": "Best practices for lateral movement investigation include: monitoring for remote administration tool usage, analyzing authentication logs across systems, identifying unusual account behavior, and mapping network connections between hosts.",
+        "category": "Threat Detection"
+    },
+    {
+        "title": "Indicators of Compromise",
+        "content": "Common indicators of compromise include: unexpected outbound connections, unusual process hierarchy, modification of system files, creation of scheduled tasks, and changes to startup registry keys.",
+        "category": "Threat Detection"
+    },
+    {
+        "title": "Ransomware Analysis",
+        "content": "When analyzing potential ransomware activity, look for: mass file modifications, suspicious encryption processes, deletion of volume shadow copies, and attempts to disable security tools.",
+        "category": "Malware Analysis"
+    },
+    {
+        "title": "Privilege Escalation",
+        "content": "For privilege escalation investigation, focus on: new service creation, scheduled task modification, unusual process elevation, and unexpected admin group changes.",
+        "category": "Threat Detection"
+    },
+    {
+        "title": "Network Security Monitoring",
+        "content": "Network security monitoring should prioritize: unusual protocol usage, large data transfers to unknown destinations, DNS tunneling attempts, and encrypted traffic to uncommon destinations.",
+        "category": "Network Security"
+    }
 ]
 
 def seed_database():
@@ -207,24 +234,13 @@ def seed_database():
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
-                # Enable pgvector extension and create table if not exists
-                cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS security_knowledge (
-                        id SERIAL PRIMARY KEY,
-                        content TEXT NOT NULL,
-                        embedding vector(1536),
-                        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-                    )
-                """)
-                
                 # Generate dummy embeddings (all zeros) and insert data
                 for knowledge in SECURITY_KNOWLEDGE:
                     # Create a dummy embedding (all zeros)
-                    dummy_embedding = np.zeros(1536).tolist()
+                    dummy_embedding = np.zeros(1024).tolist()
                     cur.execute(
-                        "INSERT INTO security_knowledge (content, embedding) VALUES (%s, %s)",
-                        (knowledge, dummy_embedding)
+                        "INSERT INTO security_knowledge (title, content, category, embedding) VALUES (%s, %s, %s, %s)",
+                        (knowledge["title"], knowledge["content"], knowledge["category"], dummy_embedding)
                     )
                 
                 conn.commit()
