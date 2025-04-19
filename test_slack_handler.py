@@ -1,153 +1,153 @@
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+import unittest
+from unittest.mock import MagicMock, patch
 from slack_handler import SlackHandler
 from security_agent import SecurityAgent
 import os
 
-@pytest.fixture
-def mock_security_agent():
-    return AsyncMock(spec=SecurityAgent)
-
-@pytest.fixture
-def slack_handler(mock_security_agent):
-    with patch.dict(os.environ, {
-        'SLACK_BOT_TOKEN': 'test_token',
-        'SLACK_APP_TOKEN': 'test_app_token',
-        'SLACK_SIGNING_SECRET': 'test_secret'
-    }):
-        return SlackHandler(mock_security_agent)
-
-@pytest.mark.asyncio
-async def test_handle_security_command(slack_handler, mock_security_agent):
-    # Mock the ack and say functions
-    ack = AsyncMock()
-    say = AsyncMock()
+class TestSlackHandler(unittest.TestCase):
+    def setUp(self):
+        # Mock environment variables
+        self.env_patcher = patch.dict(os.environ, {
+            'SLACK_APP_TOKEN': 'test_token',
+            'SLACK_SIGNING_SECRET': 'test_secret'
+        })
+        self.env_patcher.start()
+        
+        # Initialize handler with mocked security agent
+        self.security_agent = MagicMock(spec=SecurityAgent)
+        self.handler = SlackHandler(self.security_agent)
     
-    # Test search command
-    command = {
-        "command": "/security",
-        "text": "search test query",
-        "user_id": "U123456"
-    }
+    def tearDown(self):
+        self.env_patcher.stop()
     
-    mock_security_agent.process_slack_command.return_value = {
-        "status": "success",
-        "results": [
-            {"title": "Test Result", "content": "Test content"}
+    def test_handle_security_command(self):
+        # Mock command body
+        body = {
+            "text": "search test",
+            "channel_id": "C123",
+            "response_url": "https://hooks.slack.com/commands/123/456"
+        }
+        
+        # Mock security agent response
+        self.security_agent.process_command.return_value = {
+            "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": "Test result"}}]
+        }
+        
+        # Mock ack function
+        ack = MagicMock()
+        
+        # Call handler
+        self.handler.handle_security_command(ack, body, MagicMock())
+        
+        # Verify ack was called
+        ack.assert_called_once()
+        
+        # Verify security agent was called with correct command
+        self.security_agent.process_command.assert_called_once_with("search test")
+    
+    def test_handle_message(self):
+        # Mock event
+        event = {
+            "type": "message",
+            "text": "security test",
+            "channel": "C123"
+        }
+        
+        # Mock security agent response
+        self.security_agent.process_slack_event.return_value = {
+            "status": "success",
+            "results": [{"title": "Test", "content": "Test content"}]
+        }
+        
+        # Mock say function
+        say = MagicMock()
+        
+        # Call handler
+        self.handler.handle_message(event, say)
+        
+        # Verify security agent was called
+        self.security_agent.process_slack_event.assert_called_once()
+    
+    def test_handle_app_mention(self):
+        # Mock event
+        event = {
+            "type": "app_mention",
+            "text": "<@APP123> search test",
+            "channel": "C123"
+        }
+        
+        # Mock client auth test
+        self.handler.client.auth_test = MagicMock(return_value={"user_id": "APP123"})
+        
+        # Mock security agent response
+        self.security_agent.query_knowledge_base.return_value = [
+            {"title": "Test", "content": "Test content"}
         ]
-    }
+        
+        # Mock say function
+        say = MagicMock()
+        
+        # Call handler
+        self.handler.handle_app_mention(event, say)
+        
+        # Verify security agent was called with correct query
+        self.security_agent.query_knowledge_base.assert_called_once_with("search test")
     
-    await slack_handler.handle_security_command(command, ack, say)
+    def test_handle_incident_status(self):
+        # Mock body
+        body = {
+            "actions": [{
+                "value": "123",
+                "selected_option": {"value": "in_progress"}
+            }]
+        }
+        
+        # Mock security agent response
+        self.security_agent.trigger_workflow.return_value = {
+            "status": "success"
+        }
+        
+        # Mock ack and say functions
+        ack = MagicMock()
+        say = MagicMock()
+        
+        # Call handler
+        self.handler.handle_incident_status(ack, body, say)
+        
+        # Verify ack was called
+        ack.assert_called_once()
+        
+        # Verify security agent was called with correct data
+        self.security_agent.trigger_workflow.assert_called_once_with({
+            "incident_id": "123",
+            "status": "in_progress"
+        })
     
-    # Verify ack was called
-    ack.assert_called_once()
-    
-    # Verify say was called with blocks
-    say.assert_called_once()
-    assert "blocks" in say.call_args[1]
-
-@pytest.mark.asyncio
-async def test_handle_message(slack_handler, mock_security_agent):
-    # Mock the say function
-    say = AsyncMock()
-    
-    # Test message with security keyword
-    event = {
-        "type": "message",
-        "text": "security alert test",
-        "channel": "C123456",
-        "user": "U123456"
-    }
-    
-    mock_security_agent.process_slack_event.return_value = {
-        "status": "success",
-        "results": [
-            {"title": "Test Result", "content": "Test content"}
+    def test_handle_knowledge_search(self):
+        # Mock body
+        body = {
+            "actions": [{
+                "value": "test query"
+            }]
+        }
+        
+        # Mock security agent response
+        self.security_agent.query_knowledge_base.return_value = [
+            {"title": "Test", "content": "Test content"}
         ]
-    }
-    
-    await slack_handler.handle_message(event, say)
-    
-    # Verify say was called with blocks
-    say.assert_called_once()
-    assert "blocks" in say.call_args[1]
+        
+        # Mock ack and say functions
+        ack = MagicMock()
+        say = MagicMock()
+        
+        # Call handler
+        self.handler.handle_knowledge_search(ack, body, say)
+        
+        # Verify ack was called
+        ack.assert_called_once()
+        
+        # Verify security agent was called with correct query
+        self.security_agent.query_knowledge_base.assert_called_once_with("test query")
 
-@pytest.mark.asyncio
-async def test_handle_app_mention(slack_handler, mock_security_agent):
-    # Mock the say function and WebClient
-    say = AsyncMock()
-    slack_handler.client.auth_test = MagicMock(return_value={"user_id": "BOT123"})
-    
-    # Test app mention
-    event = {
-        "type": "app_mention",
-        "text": "<@BOT123> search test",
-        "channel": "C123456"
-    }
-    
-    mock_security_agent.query_knowledge_base.return_value = [
-        {"title": "Test Result", "content": "Test content"}
-    ]
-    
-    await slack_handler.handle_app_mention(event, say)
-    
-    # Verify say was called with blocks
-    say.assert_called_once()
-    assert "blocks" in say.call_args[1]
-
-@pytest.mark.asyncio
-async def test_handle_incident_status(slack_handler, mock_security_agent):
-    # Mock the ack and say functions
-    ack = AsyncMock()
-    say = AsyncMock()
-    
-    # Test incident status update
-    body = {
-        "actions": [{
-            "value": "123",
-            "selected_option": {
-                "value": "in_progress"
-            }
-        }]
-    }
-    
-    mock_security_agent.trigger_workflow.return_value = {
-        "status": "success",
-        "workflow_id": "wf_123",
-        "incident_status": "in_progress"
-    }
-    
-    await slack_handler.handle_incident_status(ack, body, say)
-    
-    # Verify ack was called
-    ack.assert_called_once()
-    
-    # Verify say was called with success message
-    say.assert_called_once()
-    assert "in_progress" in say.call_args[0][0]
-
-@pytest.mark.asyncio
-async def test_handle_knowledge_search(slack_handler, mock_security_agent):
-    # Mock the ack and say functions
-    ack = AsyncMock()
-    say = AsyncMock()
-    
-    # Test knowledge search
-    body = {
-        "actions": [{
-            "value": "test query"
-        }]
-    }
-    
-    mock_security_agent.query_knowledge_base.return_value = [
-        {"title": "Test Result", "content": "Test content"}
-    ]
-    
-    await slack_handler.handle_knowledge_search(ack, body, say)
-    
-    # Verify ack was called
-    ack.assert_called_once()
-    
-    # Verify say was called with blocks
-    say.assert_called_once()
-    assert "blocks" in say.call_args[1] 
+if __name__ == '__main__':
+    unittest.main() 

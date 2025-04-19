@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from security_agent import SecurityAgent
 import asyncio
 import traceback
+import requests
 
 # Configure logging
 logging.basicConfig(
@@ -23,7 +24,7 @@ class SlackHandler:
         
         # Initialize Slack app
         self.app = App(
-            token=os.getenv('SLACK_BOT_TOKEN'),
+            token=os.getenv('SLACK_APP_TOKEN'),
             signing_secret=os.getenv('SLACK_SIGNING_SECRET')
         )
         
@@ -53,31 +54,45 @@ class SlackHandler:
             logger.error(f"Traceback: {traceback.format_exc()}")
             raise
     
-    def handle_security_command(self, command: Dict[str, Any], ack, respond):
-        """Handle the /security slash command."""
-        # Acknowledge the command immediately
-        ack()
-        
+    def handle_security_command(self, ack, body, logger):
         try:
-            # Process the command synchronously
-            result = self.security_agent.process_slack_command(command)
+            # Acknowledge the command immediately
+            ack()
             
-            if result["status"] == "success":
-                if "results" in result:
-                    # Format search results
-                    blocks = self._format_search_results(result["results"])
-                    respond(blocks=blocks)
-                else:
-                    respond(result["message"])
+            # Extract command text from body
+            command_text = body.get("text", "").strip()
+            response_url = body.get("response_url")
+            
+            if not response_url:
+                logger.error("No response URL provided in command body")
+                return
+            
+            # Process the command
+            result = self.security_agent.process_command(command_text)
+            
+            # Send response using the response URL
+            if result.get("blocks"):
+                requests.post(
+                    response_url,
+                    json={"blocks": result["blocks"]}
+                )
             else:
-                respond(f"Error: {result['message']}")
+                requests.post(
+                    response_url,
+                    json={"text": result.get("message", "An error occurred while processing your command.")}
+                )
+                
         except Exception as e:
             logger.error(f"Error handling security command: {str(e)}")
-            respond("An error occurred while processing your command.")
+            if response_url:
+                requests.post(
+                    response_url,
+                    json={"text": f"Error: {str(e)}"}
+                )
     
     def handle_message(self, event: Dict[str, Any], say):
         """Handle incoming messages."""
-        # Skip messages from bots
+        # Skip messages from other apps
         if event.get('subtype') == 'bot_message':
             return
         
@@ -98,7 +113,7 @@ class SlackHandler:
             loop.close()
     
     def handle_app_mention(self, event: Dict[str, Any], say):
-        """Handle when the bot is mentioned."""
+        """Handle when the app is mentioned."""
         # Run the async operation in a new event loop
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -183,6 +198,7 @@ class SlackHandler:
         ]
         
         for result in results:
+            # Add knowledge article section
             blocks.extend([
                 {
                     "type": "divider"
@@ -191,20 +207,38 @@ class SlackHandler:
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f"*{result['title']}*\n{result['content']}"
+                        "text": f"*Knowledge Article:*\n*{result['title']}*\n{result['content']}"
                     }
                 }
             ])
             
             # Add Claude's guidance if present
             if 'guidance' in result:
+                # Split the guidance into sections
+                guidance_sections = result['guidance'].split('\n## ')
+                formatted_guidance = []
+                
+                for section in guidance_sections:
+                    if section.strip():
+                        # Format each section
+                        lines = section.split('\n')
+                        title = lines[0]
+                        content = '\n'.join(lines[1:])
+                        
+                        # Remove bullet points and format as paragraphs
+                        content = content.replace('1. ', '').replace('2. ', '').replace('3. ', '').replace('4. ', '').replace('5. ', '')
+                        content = content.replace('* ', '').replace('- ', '')
+                        
+                        formatted_guidance.append(f"*{title}*\n{content.strip()}")
+                
                 blocks.append({
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": "*Expert Guidance:*\n" + result['guidance']
+                        "text": "*Expert Analysis:*\n" + "\n\n".join(formatted_guidance)
                     }
                 })
+                blocks.append({"type": "divider"})
         
         return blocks
     

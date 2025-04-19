@@ -70,7 +70,7 @@ class DatabaseManager:
         try:
             # Generate query embedding using Cohere
             query_embedding = self.inference_client.embeddings_create(
-                model="cohere/embed-english-v3.0",
+                model=os.getenv("EMBEDDING_MODEL_ID", "cohere-embed-multilingual"),
                 texts=[query]
             )[0]
 
@@ -99,11 +99,10 @@ class DatabaseManager:
                 knowledge_results.append(knowledge)
             
             return knowledge_results
-
         except Exception as e:
-            logging.error(f"Error searching knowledge: {str(e)}")
-            logging.error(f"Traceback: {traceback.format_exc()}")
-            return []
+            logger.error(f"Error searching knowledge: {str(e)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            raise
     
     def create_incident(self, title: str, description: str, severity: SeverityLevel) -> SecurityIncident:
         """Create a new security incident."""

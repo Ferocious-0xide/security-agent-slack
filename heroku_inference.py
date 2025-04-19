@@ -8,28 +8,28 @@ logging.basicConfig(level=logging.DEBUG)  # Set to DEBUG level
 logger = logging.getLogger(__name__)
 
 class InferenceClient:
-    def __init__(self, cohere_key: str = None, anthropic_key: str = None):
+    def __init__(self, cohere_key: str = None, inference_key: str = None):
         load_dotenv()
         self.cohere_key = cohere_key or os.getenv("EMBEDDING_KEY")
-        self.anthropic_key = anthropic_key or os.getenv("ANTHROPIC_API_KEY")
+        self.inference_key = inference_key or os.getenv("INFERENCE_KEY")
         
         if not self.cohere_key:
             raise ValueError("Cohere API key is required")
         
         # Cohere configuration
-        self.cohere_url = os.getenv("EMBEDDING_URL", "https://api.cohere.ai/v1")
-        self.cohere_model_id = os.getenv("EMBEDDING_MODEL_ID", "embed-english-v3.0")
+        self.cohere_url = os.getenv("EMBEDDING_URL", "https://us.inference.heroku.com")
+        self.cohere_model_id = os.getenv("EMBEDDING_MODEL_ID", "cohere-embed-multilingual")
         self.cohere_headers = {
             "Authorization": f"Bearer {self.cohere_key}",
             "Content-Type": "application/json"
         }
         
-        # Anthropic configuration
-        if self.anthropic_key:
-            self.anthropic_url = "https://api.anthropic.com/v1"
-            self.anthropic_headers = {
-                "x-api-key": self.anthropic_key,
-                "anthropic-version": "2023-06-01",
+        # Inference configuration
+        if self.inference_key:
+            self.inference_url = os.getenv("INFERENCE_URL", "https://us.inference.heroku.com")
+            self.inference_model_id = os.getenv("INFERENCE_MODEL_ID", "claude-3-7-sonnet")
+            self.inference_headers = {
+                "Authorization": f"Bearer {self.inference_key}",
                 "Content-Type": "application/json"
             }
 
@@ -67,23 +67,34 @@ class InferenceClient:
                 logger.error(f"Response content: {e.response.content}")
             raise
 
-    def chat_completion(self, messages: List[Dict[str, str]], model: str = "claude-3-sonnet-20240229") -> str:
-        """Generate chat completion using Anthropic."""
-        if not self.anthropic_key:
-            raise ValueError("Anthropic API key is required for chat completions")
+    def chat_completion(self, messages: List[Dict[str, str]], model: str = None) -> str:
+        """Generate chat completion using Heroku Inference."""
+        if not self.inference_key:
+            raise ValueError("Inference API key is required")
             
         try:
+            # Convert messages to system and user messages format
+            formatted_messages = []
+            for msg in messages:
+                formatted_messages.append({
+                    "role": "user" if msg["role"] == "user" else "assistant",
+                    "content": msg["content"]
+                })
+
             response = requests.post(
-                f"{self.anthropic_url}/messages",
-                headers=self.anthropic_headers,
+                f"{self.inference_url}/v1/chat/completions",
+                headers=self.inference_headers,
                 json={
-                    "model": model,
-                    "messages": messages,
-                    "max_tokens": 1024
+                    "model": model or self.inference_model_id,
+                    "messages": formatted_messages,
+                    "max_tokens": 1024,
+                    "temperature": 0.7
                 }
             )
             response.raise_for_status()
-            return response.json()["content"][0]["text"]
+            
+            logger.debug(f"Inference API Response: {response.json()}")
+            return response.json()["choices"][0]["message"]["content"]
         except Exception as e:
             logger.error(f"Error generating chat completion: {str(e)}")
             if hasattr(e, 'response'):
