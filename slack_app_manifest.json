@@ -1,0 +1,40 @@
+{
+  "display_information": {
+    "name": "Security Agent",
+    "description": "A security-focused assistant for incident response and knowledge management",
+    "background_color": "#4a154b"
+  },
+  "features": {
+    "bot_user": {
+      "display_name": "Security Agent",
+      "always_online": true
+    },
+    "slash_commands": [
+      {
+        "command": "/security",
+        "description": "Query the security knowledge base",
+        "usage_hint": "[query]",
+        "should_escape": false
+      }
+    ]
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": [
+        "commands",
+        "chat:write",
+        "chat:write.public",
+        "app_mentions:read",
+        "channels:history",
+        "groups:history",
+        "im:history",
+        "mpim:history"
+      ]
+    }
+  },
+  "settings": {
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": true,
+    "token_rotation_enabled": false
+  }
+} 

@@ -66,43 +66,69 @@ class DatabaseManager:
             raise
     
     def search_knowledge(self, query: str, limit: int = 5) -> List[SecurityKnowledge]:
-        """Search security knowledge using vector similarity."""
+        """Search security knowledge using vector similarity and keyword matching."""
         try:
-            # Generate query embedding using Cohere
-            query_embedding = self.inference_client.embeddings_create(
-                model=os.getenv("EMBEDDING_MODEL_ID", "cohere-embed-multilingual"),
-                texts=[query]
-            )[0]
-
-            # Search for similar knowledge entries using SQLAlchemy
+            logger.debug(f"Searching knowledge base for: {query}")
+            
+            # Count the total number of entries in the knowledge base
             db = next(self.get_db())
-            results = db.query(
-                SecurityKnowledge.id,
-                SecurityKnowledge.title,
-                SecurityKnowledge.content,
-                SecurityKnowledge.category,
-                SecurityKnowledge.embedding
-            ).order_by(
-                SecurityKnowledge.embedding.l2_distance(query_embedding)
-            ).limit(limit).all()
+            total_entries = db.query(SecurityKnowledge).count()
+            logger.debug(f"Total entries in knowledge base: {total_entries}")
             
-            # Convert results to SecurityKnowledge objects
-            knowledge_results = []
-            for r in results:
-                knowledge = SecurityKnowledge(
-                    id=r.id,
-                    title=r.title,
-                    content=r.content,
-                    category=r.category,
-                    embedding=r.embedding
-                )
-                knowledge_results.append(knowledge)
+            if total_entries == 0:
+                logger.warning("Knowledge base is empty!")
+                return []
             
-            return knowledge_results
+            try:
+                # Generate query embedding using Cohere
+                logger.debug("Generating embedding for query")
+                query_embedding = self.inference_client.embeddings_create(
+                    model=os.getenv("EMBEDDING_MODEL_ID", "cohere-embed-multilingual"),
+                    texts=[query]
+                )[0]
+
+                # Search for similar knowledge entries using SQLAlchemy
+                logger.debug("Performing vector similarity search")
+                results = db.query(
+                    SecurityKnowledge.id,
+                    SecurityKnowledge.title,
+                    SecurityKnowledge.content,
+                    SecurityKnowledge.category,
+                    SecurityKnowledge.embedding
+                ).order_by(
+                    SecurityKnowledge.embedding.l2_distance(query_embedding)
+                ).limit(limit).all()
+                
+                logger.debug(f"Vector search found {len(results)} results")
+            except Exception as embed_error:
+                logger.error(f"Vector search failed: {str(embed_error)}")
+                logger.debug("Falling back to keyword search")
+                
+                # Fallback to keyword search if embedding fails
+                query_terms = query.lower().split()
+                results = db.query(SecurityKnowledge).filter(
+                    or_(
+                        *[SecurityKnowledge.title.ilike(f"%{term}%") for term in query_terms],
+                        *[SecurityKnowledge.content.ilike(f"%{term}%") for term in query_terms]
+                    )
+                ).limit(limit).all()
+                
+                logger.debug(f"Keyword search found {len(results)} results")
+            
+            # Log details about the results
+            for i, r in enumerate(results):
+                logger.debug(f"Result {i+1}: '{r.title}' (id: {r.id})")
+            
+            # Return results as SecurityKnowledge objects
+            return list(results)
+            
         except Exception as e:
             logger.error(f"Error searching knowledge: {str(e)}")
             logger.error(f"Traceback: {traceback.format_exc()}")
-            raise
+            
+            # Return empty list instead of raising exception
+            logger.warning("Returning empty results due to search error")
+            return []
     
     def create_incident(self, title: str, description: str, severity: SeverityLevel) -> SecurityIncident:
         """Create a new security incident."""

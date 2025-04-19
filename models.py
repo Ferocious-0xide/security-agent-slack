@@ -21,8 +21,6 @@ class SecurityKnowledge(Base):
     content = Column(Text, nullable=False)
     category = Column(String(100), nullable=False)
     embedding = Column(Vector(1024))  # Cohere embedding dimension
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     def __repr__(self):
         return f"<SecurityKnowledge(title='{self.title}', category='{self.category}')>"

@@ -8,6 +8,8 @@ from contextlib import contextmanager
 import numpy as np
 from dotenv import load_dotenv
 import logging
+from database import DatabaseManager
+import traceback
 
 # Configure logging
 logging.basicConfig(
@@ -249,9 +251,60 @@ def seed_database():
     except Exception as e:
         print(f"Error seeding database: {e}")
 
+def main():
+    """Initialize and setup the database."""
+    try:
+        # Load environment variables
+        load_dotenv()
+        
+        # Initialize database
+        logger.info("Initializing database...")
+        db_manager = DatabaseManager()
+        db_manager.init_db()
+        
+        # Add sample security knowledge
+        logger.info("Adding sample security knowledge...")
+        
+        # Data Exfiltration
+        db_manager.add_security_knowledge(
+            title="Data Exfiltration Detection",
+            content="Data exfiltration occurs when sensitive data is transferred out of an organization without authorization. Key indicators include unusual outbound network traffic, especially to unfamiliar domains, large data transfers outside of business hours, and unexpected access to sensitive databases.",
+            category="Data Security"
+        )
+        
+        # Lateral Movement
+        db_manager.add_security_knowledge(
+            title="Lateral Movement Investigation",
+            content="Best practices for lateral movement investigation include: monitoring for remote administration tool usage, analyzing authentication logs across systems, identifying unusual account behavior, and mapping network connections between hosts.",
+            category="Incident Response"
+        )
+        
+        # Indicators of Compromise
+        db_manager.add_security_knowledge(
+            title="Indicators of Compromise",
+            content="Common indicators of compromise include: unexpected outbound connections, unusual process hierarchy, modification of system files, creation of scheduled tasks, and changes to startup registry keys.",
+            category="Threat Detection"
+        )
+        
+        # Privilege Escalation
+        db_manager.add_security_knowledge(
+            title="Privilege Escalation Techniques",
+            content="Attackers often use techniques like exploiting vulnerable services, password spraying, credential theft, and abusing misconfigured permissions to escalate privileges within a network.",
+            category="Attack Techniques"
+        )
+        
+        # Suspicious Process Creation
+        db_manager.add_security_knowledge(
+            title="Suspicious Process Creation",
+            content="Monitor for suspicious process creation events such as command shells spawned by unusual parent processes, execution from temporary directories, processes with obfuscated command lines, and administrative tools running under non-administrative contexts.",
+            category="Endpoint Security"
+        )
+        
+        logger.info("Database setup completed successfully")
+        
+    except Exception as e:
+        logger.error(f"Error setting up database: {str(e)}")
+        logger.error(traceback.format_exc())
+        
 if __name__ == "__main__":
-    print("Setting up database...")
-    setup_database()
-    print("Seeding initial data...")
-    seed_database()
-    print("Setup complete!")
+    main()
