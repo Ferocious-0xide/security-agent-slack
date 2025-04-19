@@ -225,20 +225,25 @@ class SlackHandler:
                         title = lines[0]
                         content = '\n'.join(lines[1:])
                         
-                        # Remove bullet points and format as paragraphs
+                        # Format content as paragraphs
                         content = content.replace('1. ', '').replace('2. ', '').replace('3. ', '').replace('4. ', '').replace('5. ', '')
                         content = content.replace('* ', '').replace('- ', '')
+                        content = content.replace('\n', ' ').strip()  # Convert to single paragraph
                         
-                        formatted_guidance.append(f"*{title}*\n{content.strip()}")
+                        formatted_guidance.append(f"*{title}*\n{content}")
                 
-                blocks.append({
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": "*Expert Analysis:*\n" + "\n\n".join(formatted_guidance)
+                blocks.extend([
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": "*Expert Analysis:*\n" + "\n\n".join(formatted_guidance)
+                        }
+                    },
+                    {
+                        "type": "divider"
                     }
-                })
-                blocks.append({"type": "divider"})
+                ])
         
         return blocks
     
