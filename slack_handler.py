@@ -225,12 +225,17 @@ class SlackHandler:
                         title = lines[0]
                         content = '\n'.join(lines[1:])
                         
-                        # Format content as paragraphs
+                        # Clean up content - remove all bullet points, numbers, and extra whitespace
                         content = content.replace('1. ', '').replace('2. ', '').replace('3. ', '').replace('4. ', '').replace('5. ', '')
                         content = content.replace('* ', '').replace('- ', '')
                         content = content.replace('\n', ' ').strip()  # Convert to single paragraph
                         
-                        formatted_guidance.append(f"*{title}*\n```{content}```")
+                        # Remove any remaining numbers or bullets at start of lines
+                        content = '\n'.join(line.lstrip('0123456789.*- ') for line in content.split('\n'))
+                        content = content.replace('\n', ' ').strip()  # Convert to single paragraph again
+                        
+                        # Format as code block with proper spacing
+                        formatted_guidance.append(f"*{title}*\n```\n{content}\n```")
                 
                 blocks.extend([
                     {

@@ -71,14 +71,20 @@ class SecurityAgent:
 Title: {title}
 Content: {content}
 
-Based on this information and your expertise in cybersecurity:
-1. What is your assessment of this security issue?
-2. What investigation angles should we pursue?
-3. What artifacts should we collect and analyze?
-4. What containment measures do you recommend?
-5. How might this connect to larger attack patterns?
+Based on this information and your expertise in cybersecurity, provide a thorough analysis following these guidelines:
 
-Please provide a concise but thorough analysis."""
+1. Do not use bullet points, numbered lists, or any other list formatting
+2. Write in clear, well-structured paragraphs
+3. Use section headers with ## to separate different aspects of your analysis
+4. Focus on providing detailed, actionable guidance in a narrative format
+
+Please structure your response with the following sections:
+## Initial Assessment
+## Investigation Angles
+## Recommended Actions
+## Potential Connections
+
+Each section should contain detailed analysis in paragraph form, without any bullet points or numbered lists."""
                 }
             ]
 
