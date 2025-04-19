@@ -230,7 +230,7 @@ class SlackHandler:
                         content = content.replace('* ', '').replace('- ', '')
                         content = content.replace('\n', ' ').strip()  # Convert to single paragraph
                         
-                        formatted_guidance.append(f"*{title}*\n{content}")
+                        formatted_guidance.append(f"*{title}*\n```{content}```")
                 
                 blocks.extend([
                     {
