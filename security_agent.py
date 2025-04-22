@@ -228,10 +228,11 @@ Content: {content}"""
                 
             logger.info(f"Returning {len(enriched_results)} enriched results")
             
-            # Return the original enriched results for simple formatting
+            # Return the original enriched results for simple formatting, plus a flag to use blocks
             return {
                 "message": f"Found {len(enriched_results)} results for '{query}'", 
-                "original_results": enriched_results
+                "original_results": enriched_results,
+                "use_blocks": True
             }
             
         except Exception as e:

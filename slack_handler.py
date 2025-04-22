@@ -125,41 +125,52 @@ class SlackHandler:
                 
                 # Send response based on result format
                 if isinstance(result, dict) and "original_results" in result:
-                    # Format results for Slack
-                    for i, result_item in enumerate(result["original_results"]):
-                        # Get title and content
-                        title = result_item.get("title", "Untitled")
-                        content = result_item.get("content", "")
-                        guidance = result_item.get("guidance", "")
+                    # Check if we should use block formatting with buttons
+                    if result.get("use_blocks", False):
+                        # Format results using blocks to include the Ask Charlotte button
+                        formatted_blocks = self.security_agent._format_slack_blocks(result["original_results"])
                         
-                        # Clean up any remaining formatting that Claude might have included
-                        # Remove any lines that look like headers (start with # or have : at the end)
-                        guidance_lines = guidance.split('\n')
-                        cleaned_lines = []
-                        for line in guidance_lines:
-                            line = line.strip()
-                            # Skip empty lines
-                            if not line:
-                                continue
-                            # Skip lines that look like headers
-                            if line.startswith('#') or line.startswith('*') or line.endswith(':'):
-                                continue
-                            # Add the line to our cleaned list
-                            cleaned_lines.append(line)
-                        
-                        # Join lines back into a single paragraph
-                        guidance = ' '.join(cleaned_lines)
-                        
-                        # Create a Slack-friendly formatted message
-                        # Title is bold, content is regular text
-                        message = f"*{i+1}. {title}*\n{content}"
-                        
-                        # Add guidance if it exists as a natural paragraph
-                        if guidance:
-                            message += f"\n\nInvestigation Prompt:\n{guidance}"
-                        
-                        # Send the combined message
-                        respond(text=message)
+                        # Send blocks using the respond function, not direct API call
+                        respond(
+                            blocks=formatted_blocks,
+                            text=f"Found {len(result['original_results'])} relevant security knowledge articles"
+                        )
+                    else:
+                        # Use the existing text-based formatting
+                        for i, result_item in enumerate(result["original_results"]):
+                            # Get title and content
+                            title = result_item.get("title", "Untitled")
+                            content = result_item.get("content", "")
+                            guidance = result_item.get("guidance", "")
+                            
+                            # Clean up any remaining formatting that Claude might have included
+                            # Remove any lines that look like headers (start with # or have : at the end)
+                            guidance_lines = guidance.split('\n')
+                            cleaned_lines = []
+                            for line in guidance_lines:
+                                line = line.strip()
+                                # Skip empty lines
+                                if not line:
+                                    continue
+                                # Skip lines that look like headers
+                                if line.startswith('#') or line.startswith('*') or line.endswith(':'):
+                                    continue
+                                # Add the line to our cleaned list
+                                cleaned_lines.append(line)
+                            
+                            # Join lines back into a single paragraph
+                            guidance = ' '.join(cleaned_lines)
+                            
+                            # Create a Slack-friendly formatted message
+                            # Title is bold, content is regular text
+                            message = f"*{i+1}. {title}*\n{content}"
+                            
+                            # Add guidance if it exists as a natural paragraph
+                            if guidance:
+                                message += f"\n\nInvestigation Prompt:\n{guidance}"
+                            
+                            # Send the combined message
+                            respond(text=message)
                 elif isinstance(result, dict) and "message" in result:
                     respond(text=result["message"])
                 else:
@@ -518,6 +529,9 @@ class SlackHandler:
             # Acknowledge the request immediately
             await ack()
             
+            # Log the entire body for debugging
+            logger.debug(f"Ask Charlotte button clicked with body: {json.dumps(body)[:1000]}...")
+            
             # Extract data
             channel_id = body["channel"]["id"]
             thread_ts = body.get("message", {}).get("thread_ts") or body.get("message", {}).get("ts")
@@ -529,6 +543,7 @@ class SlackHandler:
                 title = value_data.get("title", "Security Investigation")
                 guidance = value_data.get("guidance", "")
                 article_id = value_data.get("article_id", "unknown")
+                logger.info(f"Parsed button value: title='{title[:30]}...', article_id='{article_id}', guidance length={len(guidance)}")
             except (json.JSONDecodeError, KeyError, IndexError) as e:
                 logger.error(f"Error parsing button value: {e}")
                 title = "Security Investigation"
@@ -537,6 +552,7 @@ class SlackHandler:
             
             # Open a modal dialog for the user to edit/confirm the prompt
             try:
+                logger.info(f"Opening modal dialog for user {user_id} in channel {channel_id}")
                 result = await client.views_open(
                     trigger_id=body["trigger_id"],
                     view={
@@ -591,6 +607,7 @@ class SlackHandler:
                 logger.debug(f"Successfully opened modal: {result}")
             except Exception as modal_error:
                 logger.error(f"Error opening modal: {modal_error}")
+                logger.error(traceback.format_exc())
                 error_message = "I had trouble opening the dialog. Please try again later."
                 await client.chat_postMessage(
                     channel=channel_id,
@@ -617,6 +634,9 @@ class SlackHandler:
             # Acknowledge the request immediately
             await ack()
             
+            # Log the submission for debugging
+            logger.debug(f"Charlotte modal submitted with body: {json.dumps(body)[:1000]}...")
+            
             # Extract data from the submission
             view = body["view"]
             private_metadata = json.loads(view["private_metadata"])
@@ -624,8 +644,11 @@ class SlackHandler:
             thread_ts = private_metadata["thread_ts"]
             article_id = private_metadata["article_id"]
             
+            logger.info(f"Processing Charlotte modal submission for article_id: {article_id} in channel: {channel_id}")
+            
             # Get the user's edited prompt
             user_prompt = view["state"]["values"]["prompt_block"]["prompt_input"]["value"]
+            logger.info(f"User prompt length: {len(user_prompt)} characters")
             
             # Send a loading message
             loading_message = "Processing your request with Charlotte..."
@@ -638,11 +661,16 @@ class SlackHandler:
             
             # Process the request with Charlotte (Heroku Inference)
             try:
+                logger.info("Starting Charlotte request processing")
+                
                 # 1. Process with Heroku Inference for the 10-step analysis
                 analysis_result = await self._process_charlotte_request(user_prompt, article_id)
+                logger.info(f"Received Charlotte analysis result with {len(analysis_result)} characters")
                 
                 # 2. Send to Salesforce AgentForce via Heroku AppLink
-                await self._trigger_salesforce_flow(user_prompt, article_id, channel_id, thread_ts)
+                logger.info("Triggering Salesforce flow")
+                salesforce_result = await self._trigger_salesforce_flow(user_prompt, article_id, channel_id, thread_ts)
+                logger.info(f"Salesforce flow result: {salesforce_result}")
                 
                 # Delete loading message
                 try:
@@ -654,17 +682,20 @@ class SlackHandler:
                     logger.warning(f"Failed to delete loading message: {e}")
                 
                 # Format and send the response
+                logger.info("Formatting Charlotte response")
                 blocks = self._format_charlotte_response(analysis_result)
                 
-                await client.chat_postMessage(
+                logger.info(f"Sending formatted response with {len(blocks)} blocks")
+                response = await client.chat_postMessage(
                     channel=channel_id,
                     thread_ts=thread_ts,
                     blocks=blocks
                 )
+                logger.info(f"Response successfully sent: {response.get('ts')}")
                 
             except Exception as process_error:
                 logger.error(f"Error processing with Charlotte: {process_error}")
-                logger.error(traceback.format_exc())
+                logger.error(f"Stack trace: {traceback.format_exc()}")
                 
                 # Delete loading message
                 try:
@@ -684,24 +715,70 @@ class SlackHandler:
                 
         except Exception as e:
             logger.error(f"Error handling Charlotte modal submission: {e}")
-            logger.error(traceback.format_exc())
+            logger.error(f"Stack trace: {traceback.format_exc()}")
     
     async def _process_charlotte_request(self, prompt, article_id):
         """Process the request with Charlotte via Heroku Inference."""
         try:
-            # Construct the messages for the Charlotte API
+            # Get additional context about the article if possible
+            article_context = await self._get_article_context(article_id)
+            
+            # Construct the messages for the Charlotte API with enhanced context
+            system_message = """You are Charlotte, a security operations assistant that provides structured, step-by-step guidance for security investigations. 
+Your task is to analyze security guidance and convert it into a detailed, actionable 10-step process for security analysts.
+Each step should be concrete, clear, and specific to the security issue at hand."""
+            
+            user_message = f"""Based on the following security guidance prompt, provide a detailed 10-step process for investigating and addressing this security issue.
+
+CONTEXT:
+{article_context}
+
+SECURITY GUIDANCE:
+{prompt}
+
+FORMAT REQUIREMENTS:
+1. Provide exactly 10 numbered steps
+2. Each step should begin with an action verb
+3. Include specific tools, commands, or resources where applicable
+4. Keep each step concise but detailed enough to be actionable
+5. Format as a clean numbered list (1-10)
+"""
+            
             messages = [
-                {"role": "system", "content": "You are Charlotte, a security operations assistant that provides structured, step-by-step guidance for security investigations."},
-                {"role": "user", "content": f"Based on the following security guidance prompt, provide a detailed 10-step process for investigating and addressing this security issue. Format the response as a numbered list with clear, actionable steps.\n\nPrompt: {prompt}"}
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": user_message}
             ]
             
             # Call the Heroku Inference API via the inference client
+            logger.info(f"Sending enhanced request to inference service with {len(user_message)} characters")
             result = self.security_agent.inference_client.chat_completion(messages)
             
             return result
         except Exception as e:
             logger.error(f"Error processing Charlotte request: {e}")
             raise
+    
+    async def _get_article_context(self, article_id):
+        """Retrieve additional context about the security article."""
+        try:
+            # Check if article_id is in a valid format
+            if not article_id or article_id == "unknown":
+                return "No additional context available for this security issue."
+            
+            # Try to get the article from the database
+            try:
+                # Use the non-async database call
+                article = self.security_agent.db_manager.get_knowledge_by_id(article_id)
+                if article:
+                    return f"Article Title: {article.title}\nCategory: {article.category if hasattr(article, 'category') else 'General'}\nContent: {article.content[:500]}..."
+            except Exception as db_error:
+                logger.warning(f"Could not retrieve article context from database: {str(db_error)}")
+            
+            # If we get here, we couldn't get article info from the database
+            return "Limited context available for this security issue."
+        except Exception as e:
+            logger.warning(f"Error getting article context: {str(e)}")
+            return "No additional context available."
     
     async def _trigger_salesforce_flow(self, prompt, article_id, channel_id, thread_ts):
         """Trigger Salesforce flow via Heroku AppLink."""
@@ -883,4 +960,4 @@ class SlackHandler:
 if __name__ == "__main__":
     security_agent = SecurityAgent()
     handler = SlackHandler(security_agent)
-    handler.start() 
+    handler.start()

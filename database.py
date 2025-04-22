@@ -178,6 +178,15 @@ class DatabaseManager:
             logger.error(f"Error getting incident: {str(e)}")
             raise
     
+    def get_knowledge_by_id(self, knowledge_id: str) -> Optional[SecurityKnowledge]:
+        """Get a security knowledge article by ID."""
+        try:
+            db = next(self.get_db())
+            return db.query(SecurityKnowledge).filter(SecurityKnowledge.id == knowledge_id).first()
+        except SQLAlchemyError as e:
+            logger.error(f"Error getting knowledge article: {str(e)}")
+            raise
+    
     def update_incident_status(self, incident_id: int, status: str) -> SecurityIncident:
         """Update an incident's status."""
         try:
