@@ -303,6 +303,28 @@ Content: {content}"""
                         "text": f"*Investigation Prompt:*\n{guidance}"
                     }
                 })
+                
+                # Add "Ask Charlotte" button to get a step-by-step process
+                blocks.append({
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {
+                                "type": "plain_text",
+                                "text": "Ask Charlotte for steps",
+                                "emoji": True
+                            },
+                            "style": "primary",
+                            "value": json.dumps({
+                                "article_id": result.get("id", f"article_{i}"),
+                                "title": result["title"],
+                                "guidance": guidance
+                            }),
+                            "action_id": "ask_charlotte"
+                        }
+                    ]
+                })
             else:
                 logger.warning(f"No guidance found for article {i+1}: {result['title']}")
             
