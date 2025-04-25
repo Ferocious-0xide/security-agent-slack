@@ -3,8 +3,16 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from datetime import datetime
 import enum
-from pgvector.sqlalchemy import Vector
+import os
+import logging
 
+# Try to import pgvector, but don't fail if not available
+try:
+    from pgvector.sqlalchemy import Vector
+    has_pgvector = True
+except ImportError:
+    has_pgvector = False
+    
 Base = declarative_base()
 
 class SeverityLevel(enum.Enum):
@@ -20,7 +28,11 @@ class SecurityKnowledge(Base):
     title = Column(String(255), nullable=False)
     content = Column(Text, nullable=False)
     category = Column(String(100), nullable=False)
-    embedding = Column(Vector(1024))  # Cohere embedding dimension
+    guidance = Column(Text, nullable=True)
+    
+    # Only add the embedding column if pgvector is available
+    if has_pgvector:
+        embedding = Column(Vector(1024))  # Cohere embedding dimension
     
     def __repr__(self):
         return f"<SecurityKnowledge(title='{self.title}', category='{self.category}')>"

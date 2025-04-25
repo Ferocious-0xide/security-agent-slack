@@ -122,7 +122,14 @@ graph TD
    SF_PASSWORD=...
    ```
 
-2. **Database Setup**:
+2. **Heroku AppLink Configuration**:
+   ```bash
+   # Heroku AppLink Configuration (for Salesforce integration)
+   HEROKU_APPLINK_URL=https://your-applink-instance.herokuapp.com
+   HEROKU_APPLINK_TOKEN=your-secure-token
+   ```
+
+3. **Database Setup**:
    ```bash
    # Enable pgvector extension
    CREATE EXTENSION vector;
@@ -135,6 +142,37 @@ graph TD
        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
    );
    ```
+
+## Salesforce Integration Setup
+
+The Security Agent platform integrates with Salesforce to create security cases based on Slack interactions:
+
+1. **Set Up Heroku AppLink**:
+   - Create a Heroku app to serve as the AppLink integration
+   - Configure the AppLink with your Salesforce credentials
+   - Set up the required endpoints:
+     - `/api/agentforce/security-case` - Creates security cases in Salesforce
+     - `/api/agentforce/security-triage` - Handles security triage events
+
+2. **Configure Salesforce Flow**:
+   - Create a Flow in Salesforce to handle the incoming payload
+   - Set up the Flow to create a Case record with the following fields:
+     - Case Title (from payload)
+     - Case Priority (from payload)
+     - Case Notes (from payload)
+     - Slack Channel ID (for reference)
+     - Original Command (for reference)
+     - Investigation Steps (for reference)
+
+3. **Environment Variables**:
+   - Set the `HEROKU_APPLINK_URL` environment variable to your AppLink instance URL
+   - Set the `HEROKU_APPLINK_TOKEN` environment variable to a secure token for authentication
+
+4. **Testing the Integration**:
+   - Use the `/security search` command in Slack to test the integration
+   - Click on the "Ask Charlotte" button to get investigation steps
+   - Click on the "Create Security Case" button to trigger the Salesforce flow
+   - Verify that the case is created in Salesforce with the correct information
 
 ## Development Workflow
 

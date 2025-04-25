@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from datetime import datetime
 import traceback
 from sqlalchemy import or_
+import psycopg2
 
 logger = logging.getLogger(__name__)
 
@@ -42,92 +43,297 @@ class DatabaseManager:
             db.close()
     
     def add_security_knowledge(self, title: str, content: str, category: str) -> Optional[SecurityKnowledge]:
-        """Add new security knowledge to the database."""
+        """Add new security knowledge to the database using direct SQL."""
+        conn = None
         try:
-            # Generate embedding using Cohere
-            embedding = self.inference_client.embeddings_create(
-                model="cohere/embed-english-v3.0",
-                texts=[content]
-            )[0]
+            # Check if vector embeddings are supported
+            has_vector = False
+            embedding = None
             
-            db = next(self.get_db())
+            # Try to generate embedding regardless
+            if self.inference_client:
+                try:
+                    # Generate embedding using Cohere
+                    embedding_result = self.inference_client.embeddings_create(
+                        model=os.getenv("EMBEDDING_MODEL_ID", "cohere-embed-multilingual"),
+                        texts=[content]
+                    )
+                    if embedding_result and len(embedding_result) > 0:
+                        embedding = embedding_result[0]
+                        logger.debug("Successfully generated embedding")
+                except Exception as e:
+                    logger.warning(f"Error generating embedding: {str(e)}")
+                    embedding = None
+            
+            # Use raw connection to avoid ORM issues
+            conn = self.engine.raw_connection()
+            cursor = conn.cursor()
+            
+            # Check if embedding column exists
+            try:
+                cursor.execute("SELECT column_name FROM information_schema.columns WHERE table_name='security_knowledge' AND column_name='embedding'")
+                has_vector = cursor.fetchone() is not None
+                logger.debug(f"Vector column exists: {has_vector}")
+            except Exception as e:
+                logger.debug(f"Error checking vector column: {e}")
+                has_vector = False
+            
+            # Insert the knowledge article
+            knowledge_id = None
+            
+            if has_vector and embedding:
+                try:
+                    # Try to use pgvector for insertion
+                    vector_conn = psycopg2.connect(os.getenv("DATABASE_URL"))
+                    try:
+                        vector_cursor = vector_conn.cursor()
+                        vector_cursor.execute(
+                            "INSERT INTO security_knowledge (title, content, category, embedding) VALUES (%s, %s, %s, %s::vector) RETURNING id",
+                            (title, content, category, embedding)
+                        )
+                        knowledge_id = vector_cursor.fetchone()[0]
+                        vector_conn.commit()
+                        logger.debug(f"Inserted knowledge with vector embedding, id: {knowledge_id}")
+                    except Exception as ve:
+                        logger.warning(f"Vector insertion failed: {ve}, falling back to non-vector insertion")
+                        vector_conn.rollback()
+                        has_vector = False
+                    finally:
+                        vector_conn.close()
+                except Exception as conn_err:
+                    logger.warning(f"Vector connection failed: {conn_err}")
+                    has_vector = False
+            
+            # If vector insertion failed or wasn't available, insert without embedding
+            if knowledge_id is None:
+                cursor.execute(
+                    "INSERT INTO security_knowledge (title, content, category) VALUES (%s, %s, %s) RETURNING id",
+                    (title, content, category)
+                )
+                knowledge_id = cursor.fetchone()[0]
+                conn.commit()
+                logger.debug(f"Inserted knowledge without vector embedding, id: {knowledge_id}")
+            
+            # Create a SecurityKnowledge object to return
             knowledge = SecurityKnowledge(
+                id=knowledge_id,
                 title=title,
                 content=content,
-                category=category,
-                embedding=embedding
+                category=category
             )
-            db.add(knowledge)
-            db.commit()
-            db.refresh(knowledge)
+            
             return knowledge
-        except SQLAlchemyError as e:
-            logger.error(f"Error adding security knowledge: {str(e)}")
-            raise
-    
-    def search_knowledge(self, query: str, limit: int = 5) -> List[SecurityKnowledge]:
-        """Search security knowledge using vector similarity and keyword matching."""
-        try:
-            logger.debug(f"Searching knowledge base for: {query}")
-            
-            # Count the total number of entries in the knowledge base
-            db = next(self.get_db())
-            total_entries = db.query(SecurityKnowledge).count()
-            logger.debug(f"Total entries in knowledge base: {total_entries}")
-            
-            if total_entries == 0:
-                logger.warning("Knowledge base is empty!")
-                return []
-            
-            try:
-                # Generate query embedding using Cohere
-                logger.debug("Generating embedding for query")
-                query_embedding = self.inference_client.embeddings_create(
-                    model=os.getenv("EMBEDDING_MODEL_ID", "cohere-embed-multilingual"),
-                    texts=[query]
-                )[0]
-
-                # Search for similar knowledge entries using SQLAlchemy
-                logger.debug("Performing vector similarity search")
-                results = db.query(
-                    SecurityKnowledge.id,
-                    SecurityKnowledge.title,
-                    SecurityKnowledge.content,
-                    SecurityKnowledge.category,
-                    SecurityKnowledge.embedding
-                ).order_by(
-                    SecurityKnowledge.embedding.l2_distance(query_embedding)
-                ).limit(limit).all()
-                
-                logger.debug(f"Vector search found {len(results)} results")
-            except Exception as embed_error:
-                logger.error(f"Vector search failed: {str(embed_error)}")
-                logger.debug("Falling back to keyword search")
-                
-                # Fallback to keyword search if embedding fails
-                query_terms = query.lower().split()
-                results = db.query(SecurityKnowledge).filter(
-                    or_(
-                        *[SecurityKnowledge.title.ilike(f"%{term}%") for term in query_terms],
-                        *[SecurityKnowledge.content.ilike(f"%{term}%") for term in query_terms]
-                    )
-                ).limit(limit).all()
-                
-                logger.debug(f"Keyword search found {len(results)} results")
-            
-            # Log details about the results
-            for i, r in enumerate(results):
-                logger.debug(f"Result {i+1}: '{r.title}' (id: {r.id})")
-            
-            # Return results as SecurityKnowledge objects
-            return list(results)
             
         except Exception as e:
-            logger.error(f"Error searching knowledge: {str(e)}")
-            logger.error(f"Traceback: {traceback.format_exc()}")
+            if conn:
+                conn.rollback()
+            logger.error(f"Error adding security knowledge: {str(e)}")
+            raise
+        finally:
+            if conn:
+                conn.close()
+    
+    def search_knowledge(self, query: str, limit: int = 5) -> List[SecurityKnowledge]:
+        """Search security knowledge using keyword matching (fallback from vector search)."""
+        try:
+            print(f"\n[SEARCH] Searching knowledge base for: '{query}'")
+            logger.info(f"========== SEARCH QUERY: '{query}' ==========")
             
-            # Return empty list instead of raising exception
+            # Break query into terms for keyword search
+            query_terms = [term.strip() for term in query.lower().split() if term.strip()]
+            if not query_terms:
+                query_terms = [""]  # Use empty term if no valid terms
+                
+            print(f"[SEARCH] Search terms: {', '.join(query_terms) if query_terms[0] else 'empty query'}")
+            logger.info(f"Search terms: {query_terms}")
+                
+            # Use raw SQL to avoid ORM issues with missing columns
+            conn = self.engine.raw_connection()
+            try:
+                cursor = conn.cursor()
+                
+                # Check total entries
+                cursor.execute("SELECT COUNT(*) FROM security_knowledge")
+                total_entries = cursor.fetchone()[0]
+                print(f"[SEARCH] Total articles in knowledge base: {total_entries}")
+                logger.info(f"Total entries in knowledge base: {total_entries}")
+                
+                if total_entries == 0:
+                    logger.warning("Knowledge base is empty!")
+                    print("[SEARCH ERROR] Knowledge base is empty!")
+                    return []
+                
+                # Check if vector column exists
+                has_vector = False
+                try:
+                    cursor.execute("SELECT column_name FROM information_schema.columns WHERE table_name='security_knowledge' AND column_name='embedding'")
+                    has_vector = cursor.fetchone() is not None
+                    logger.info(f"Vector column exists: {has_vector}")
+                except Exception as e:
+                    logger.debug(f"Error checking vector column: {e}")
+                    has_vector = False
+                
+                print(f"[SEARCH] Vector search available: {has_vector}")
+                
+                results = []
+                
+                # Always do keyword search first
+                if query_terms:
+                    # Build SQL for keyword search
+                    sql_conditions = []
+                    sql_params = []
+                    
+                    for i, term in enumerate(query_terms):
+                        if term:
+                            sql_conditions.append(f"title ILIKE %s OR content ILIKE %s")
+                            sql_params.extend([f"%{term}%", f"%{term}%"])
+                    
+                    if sql_conditions:
+                        sql = f"""
+                            SELECT id, title, content, category 
+                            FROM security_knowledge 
+                            WHERE {' OR '.join(sql_conditions)}
+                            LIMIT %s
+                        """
+                        # Ensure limit is always applied
+                        sql_params.append(min(limit, 5))  # Never exceed 5 results
+                        
+                        print(f"[SEARCH] Executing keyword search with limit {min(limit, 5)}...")
+                        cursor.execute(sql, sql_params)
+                        keyword_rows = cursor.fetchall()
+                        print(f"[SEARCH] Keyword search found {len(keyword_rows)} results")
+                        logger.info(f"Keyword search found {len(keyword_rows)} results")
+                        
+                        # Convert to SecurityKnowledge objects
+                        for row in keyword_rows:
+                            knowledge = SecurityKnowledge(
+                                id=row[0],
+                                title=row[1],
+                                content=row[2],
+                                category=row[3]
+                            )
+                            results.append(knowledge)
+                            print(f"[SEARCH RESULT] #{knowledge.id}: {knowledge.title} (Category: {knowledge.category})")
+                
+                # Try vector search if available
+                if has_vector and self.inference_client and query:
+                    try:
+                        # Generate embedding
+                        print(f"[SEARCH] Attempting vector search...")
+                        embeddings = self.inference_client.embeddings_create(
+                            model=os.getenv("EMBEDDING_MODEL_ID", "cohere-embed-multilingual"),
+                            texts=[query]
+                        )
+                        
+                        if embeddings and len(embeddings) > 0:
+                            # Need a different connection with pgvector extension
+                            vector_conn = psycopg2.connect(os.getenv("DATABASE_URL"))
+                            try:
+                                vector_cursor = vector_conn.cursor()
+                                
+                                # Try different distance methods (these work even if pgvector isn't fully available)
+                                for distance_method in ["<->", "cosine_distance", "l2_distance"]:
+                                    try:
+                                        sql = f"""
+                                            SELECT id, title, content, category
+                                            FROM security_knowledge
+                                            ORDER BY embedding {distance_method} %s::vector
+                                            LIMIT %s
+                                        """
+                                        vector_cursor.execute(sql, (embeddings[0], min(limit, 5)))
+                                        vector_rows = vector_cursor.fetchall()
+                                        
+                                        if vector_rows:
+                                            print(f"[SEARCH] Vector search ({distance_method}) found {len(vector_rows)} results")
+                                            logger.info(f"Vector search ({distance_method}) found {len(vector_rows)} results")
+                                            
+                                            # Create vector results
+                                            vector_results = []
+                                            for row in vector_rows:
+                                                knowledge = SecurityKnowledge(
+                                                    id=row[0],
+                                                    title=row[1],
+                                                    content=row[2],
+                                                    category=row[3]
+                                                )
+                                                vector_results.append(knowledge)
+                                                print(f"[VECTOR RESULT] #{knowledge.id}: {knowledge.title}")
+                                            
+                                            # Merge with keyword results
+                                            existing_ids = {k.id for k in results}
+                                            added_count = 0
+                                            for vr in vector_results:
+                                                if vr.id not in existing_ids:
+                                                    results.append(vr)
+                                                    added_count += 1
+                                                    if len(results) >= limit:
+                                                        break
+                                                        
+                                            print(f"[SEARCH] Added {added_count} unique vector results to final results")
+                                            # Found results with this method, no need to try others
+                                            break
+                                    except Exception as vector_error:
+                                        logger.debug(f"Vector search method {distance_method} failed: {vector_error}")
+                                        continue
+                            finally:
+                                vector_conn.close()
+                    except Exception as e:
+                        logger.error(f"Vector search failed: {str(e)}")
+                        print(f"[SEARCH ERROR] Vector search failed: {str(e)}")
+                
+                # Log details about the final results
+                print(f"\n[SEARCH] === FINAL RESULTS ({len(results[:min(limit, 5)])}) ===")
+                for i, r in enumerate(results[:min(limit, 5)]):
+                    print(f"[SEARCH RESULT {i+1}] {r.title} (Category: {r.category})")
+                    # Print a snippet of the content
+                    content_snippet = r.content[:100] + "..." if len(r.content) > 100 else r.content
+                    print(f"  Content snippet: {content_snippet}")
+                    logger.info(f"Result {i+1}: '{r.title}' (id: {r.id})")
+                
+                if not results:
+                    print("[SEARCH] No results found for your query.")
+                
+                print("\n")
+                # Strictly enforce result limit to maximum of 5
+                return results[:min(limit, 5)]
+            finally:
+                conn.close()
+        except Exception as e:
+            error_msg = f"Error searching knowledge: {str(e)}"
+            logger.error(error_msg)
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            print(f"[SEARCH ERROR] {error_msg}")
+            
+            # In case of error, try a final fallback with minimalistic direct query 
+            try:
+                print("[SEARCH] Attempting fallback query...")
+                conn = self.engine.raw_connection()
+                cursor = conn.cursor()
+                # Use a hard limit of 5 results
+                cursor.execute("SELECT id, title, content, category FROM security_knowledge LIMIT %s", (min(limit, 5),))
+                rows = cursor.fetchall()
+                
+                fallback_results = []
+                for row in rows:
+                    knowledge = SecurityKnowledge(
+                        id=row[0],
+                        title=row[1],
+                        content=row[2],
+                        category=row[3]
+                    )
+                    fallback_results.append(knowledge)
+                    print(f"[FALLBACK RESULT] #{knowledge.id}: {knowledge.title}")
+                
+                print(f"[SEARCH] Using fallback query, found {len(fallback_results)} results")
+                logger.warning(f"Using fallback query, found {len(fallback_results)} results")
+                return fallback_results
+            except Exception as fallback_error:
+                logger.error(f"Even fallback query failed: {fallback_error}")
+                print(f"[SEARCH ERROR] Even fallback query failed: {fallback_error}")
+                
+            # Return empty list as last resort
             logger.warning("Returning empty results due to search error")
+            print("[SEARCH] Returning empty results due to search error")
             return []
     
     def create_incident(self, title: str, description: str, severity: SeverityLevel) -> SecurityIncident:

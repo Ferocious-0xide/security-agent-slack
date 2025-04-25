@@ -44,6 +44,8 @@ class SlackHandler:
         self.slack_signing_secret = os.getenv('SLACK_SIGNING_SECRET')
         self.slack_bot_token = os.getenv('SLACK_BOT_TOKEN')
         
+        self.logger.info("SlackHandler initialized with custom Charlotte button handlers")
+        
         if not self.slack_app_token or not self.slack_signing_secret or not self.slack_bot_token:
             self.logger.error("Missing required Slack tokens")
             self.logger.error(f"APP_TOKEN: {'Present' if self.slack_app_token else 'Missing'}")
@@ -90,103 +92,925 @@ class SlackHandler:
         # Action handlers
         self.app.action("incident_status")(self.handle_incident_status)
         self.app.action("knowledge_search")(self.handle_knowledge_search)
-        self.app.action("ask_charlotte")(self.handle_ask_charlotte)
         
-        # View submission handlers
-        self.app.view("charlotte_modal")(self.handle_charlotte_submission)
+        # Register the Ask Charlotte button handler using a direct handler
+        def ask_charlotte_handler(ack, body, client):
+            ack()
+            logger.info(f"Ask Charlotte button clicked in channel: {body.get('channel', {}).get('id')}")
+            logger.debug(f"Button body: {json.dumps(body)[:500]}...")
+            
+            # Extract necessary data for direct processing
+            channel_id = body.get("channel", {}).get("id")
+            if not channel_id:
+                logger.error("No channel ID in button payload")
+                return
+            
+            # Get the message timestamp - this is the timestamp of the message containing the button
+            message_ts = body.get("message", {}).get("ts")
+            # Get thread_ts if the message is already in a thread
+            thread_ts = body.get("message", {}).get("thread_ts")
+            
+            # For improved clarity, log the timestamps
+            logger.info(f"Button clicked in message with ts: {message_ts}, thread_ts: {thread_ts}")
+            
+            response_url = body.get("response_url")
+            
+            # Parse the button value
+            try:
+                value_data = json.loads(body["actions"][0]["value"])
+                title = value_data.get("title", "Security Investigation")
+                guidance = value_data.get("guidance", "")
+                article_id = value_data.get("article_id", "unknown")
+                is_original_message = value_data.get("original_message", False)
+                initial_command = value_data.get("initial_command", "")  # Get the initial command if available
+                
+                # Store additional metadata about the original command
+                metadata = {
+                    "channel_id": channel_id,
+                    "message_ts": message_ts,  # Store message_ts for use in replies
+                    "thread_ts": thread_ts,    # Store thread_ts if it exists
+                    "article_id": article_id,
+                    "response_url": response_url,
+                    "is_original_message": is_original_message,
+                    "initial_command": initial_command  # Include the initial command in metadata
+                }
+                
+                logger.info(f"Opening modal with metadata: {json.dumps(metadata)[:200]}...")
+                
+                # Open the modal directly
+                client.views_open(
+                    trigger_id=body["trigger_id"],
+                    view={
+                        "type": "modal",
+                        "callback_id": "charlotte_modal",
+                        "title": {
+                            "type": "plain_text",
+                            "text": "Ask Charlotte"
+                        },
+                        "submit": {
+                            "type": "plain_text",
+                            "text": "Submit"
+                        },
+                        "close": {
+                            "type": "plain_text",
+                            "text": "Cancel"
+                        },
+                        "private_metadata": json.dumps(metadata),
+                        "blocks": [
+                            {
+                                "type": "section",
+                                "text": {
+                                    "type": "mrkdwn",
+                                    "text": f"*Please edit or confirm your request to Charlotte about:*\n{title}"
+                                }
+                            },
+                            {
+                                "type": "input",
+                                "block_id": "prompt_block",
+                                "element": {
+                                    "type": "plain_text_input",
+                                    "multiline": True,
+                                    "action_id": "prompt_input",
+                                    "initial_value": guidance,
+                                    "placeholder": {
+                                        "type": "plain_text",
+                                        "text": "Edit your request to Charlotte..."
+                                    }
+                                },
+                                "label": {
+                                    "type": "plain_text",
+                                    "text": "Security Guidance Request"
+                                }
+                            }
+                        ]
+                    }
+                )
+            except Exception as e:
+                logger.error(f"Error in ask_charlotte_handler: {e}")
+                client.chat_postMessage(
+                    channel=channel_id,
+                    thread_ts=thread_ts,
+                    text=f"I encountered an error opening the dialog: {str(e)}"
+                )
+        
+        self.app.action("ask_charlotte")(ask_charlotte_handler)
+        
+        # Register the modal submission handler with direct processing
+        def charlotte_modal_handler(ack, body, client, view):
+            # Acknowledge the submission
+            ack()
+            logger.info(f"Charlotte modal submitted with view_id: {view.get('id')}")
+            
+            try:
+                # Extract data from the submission
+                private_metadata = json.loads(body["view"]["private_metadata"])
+                logger.info(f"Extracted private_metadata: {private_metadata}")
+                
+                channel_id = private_metadata.get("channel_id")
+                message_ts = private_metadata.get("message_ts")  # TS of the message containing the button
+                thread_ts = private_metadata.get("thread_ts")     # Thread TS if already in a thread
+                article_id = private_metadata.get("article_id")
+                response_url = private_metadata.get("response_url")
+                is_original_message = private_metadata.get("is_original_message", False)
+                initial_command = private_metadata.get("initial_command", "")
+                
+                # Determine which TS to use for the reply
+                reply_ts = None
+                if is_original_message and message_ts:
+                    # If this is a reply to a knowledge article, use message_ts
+                    reply_ts = message_ts
+                    logger.info(f"Will reply to original knowledge article message: {reply_ts}")
+                elif thread_ts:
+                    # If already in a thread, continue that thread
+                    reply_ts = thread_ts
+                    logger.info(f"Will continue existing thread: {reply_ts}")
+                
+                user_id = body.get("user", {}).get("id")
+                
+                logger.info(f"Processing request - channel: {channel_id}, message_ts: {message_ts}, thread_ts: {thread_ts}, reply_ts: {reply_ts}")
+                
+                if not channel_id or not user_id:
+                    logger.error("Missing channel_id or user_id in modal submission")
+                    return
+                    
+                # Get the user's edited prompt
+                user_prompt = body["view"]["state"]["values"]["prompt_block"]["prompt_input"]["value"]
+                logger.info(f"User prompt: {user_prompt[:50]}... ({len(user_prompt)} chars)")
+                
+                # Call the inference API directly
+                messages = [
+                    {"role": "system", "content": "You are Charlotte, a security operations assistant that provides structured, step-by-step guidance for security investigations."},
+                    {"role": "user", "content": f"Based on the following security guidance prompt, provide a detailed 10-step process for investigating and addressing this security issue. Format the response as a numbered list with clear, actionable steps.\n\nPrompt: {user_prompt}"}
+                ]
+                
+                # Process with Heroku Inference
+                result = self.security_agent.inference_client.chat_completion(messages)
+                logger.info(f"Received response from inference API: {len(result)} chars")
+                
+                # Format the response
+                blocks = []
+                
+                # Add header
+                blocks.append({
+                    "type": "header",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "Charlotte's Security Investigation Steps",
+                        "emoji": True
+                    }
+                })
+                
+                # Add divider
+                blocks.append({"type": "divider"})
+                
+                # Split the response into steps
+                steps = []
+                for line in result.split("\n"):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    
+                    # Check if line starts with a number
+                    if re.match(r"^\d+[.)]", line):
+                        # Truncate step text to avoid Slack's text limits (3000 chars per section)
+                        if len(line) > 2900:
+                            line = line[:2900] + "..."
+                        steps.append(line)
+                    
+                # If no steps were found, just split by newlines
+                if not steps:
+                    steps = [line for line in result.split("\n") if line.strip()]
+                    # Ensure each step is within Slack's text limits
+                    steps = [s[:2900] + "..." if len(s) > 2900 else s for s in steps]
+                    
+                # Add each step as a block
+                for step in steps:
+                    blocks.append({
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": step
+                        }
+                    })
+                
+                # Verify blocks don't exceed Slack's limit (50 blocks per message)
+                if len(blocks) > 45:  # Leave room for headers and buttons
+                    logger.warning(f"Too many blocks ({len(blocks)}), truncating to 45")
+                    blocks = blocks[:45]
+                    # Add a note about truncation
+                    blocks.append({
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": "_Note: Some steps were truncated due to message size limits._"
+                        }
+                    })
+                    
+                # Add note about Salesforce
+                blocks.append({"type": "divider"})
+                blocks.append({
+                    "type": "context",
+                    "elements": [
+                        {
+                            "type": "mrkdwn",
+                            "text": f"_Security investigation steps generated for <@{user_id}> • AgentForce workflow triggered_"
+                        }
+                    ]
+                })
+                
+                # Add action buttons for Salesforce case creation
+                blocks.append({
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {
+                                "type": "plain_text",
+                                "text": "Create Security Case",
+                                "emoji": True
+                            },
+                            "value": json.dumps({
+                                "initial_command": initial_command,
+                                "user_prompt": user_prompt[:250] if user_prompt else "",  # Truncate user_prompt
+                                "steps": result[:250] if result else "",  # Truncate steps to avoid exceeding button value limit
+                                "article_id": article_id,
+                                "channel_id": channel_id,
+                                "message_ts": message_ts,
+                                "thread_ts": thread_ts,
+                                "reply_ts": reply_ts
+                            }),
+                            "style": "primary",
+                            "action_id": "create_salesforce_case"
+                        }
+                    ]
+                })
+                
+                # Create a message payload that includes response_type: in_channel
+                message_payload = {
+                    "blocks": blocks,
+                    "text": "Charlotte's Security Investigation Steps"
+                }
+                
+                try:
+                    # If we have a response_url, use it - this allows posting to channels without being a member
+                    if response_url:
+                        logger.info(f"Using response_url to post to channel: {response_url[:30]}...")
+                        
+                        # Prepare payload with ephemeral response type to keep the original message
+                        payload = {
+                            "response_type": "ephemeral",
+                            "blocks": blocks,
+                            "text": "Charlotte's Security Investigation Steps"
+                        }
+                        
+                        # Add thread_ts if we should reply to a thread
+                        if reply_ts:
+                            payload["thread_ts"] = reply_ts
+                        
+                        # Log truncated payload for debugging
+                        logger.debug(f"Sending payload to Slack: {json.dumps(payload)[:500]}...")
+                        
+                        # Validate JSON before sending
+                        try:
+                            # Test the JSON serialization
+                            json_payload = json.dumps(payload)
+                            # Check if any single block is too large
+                            for i, block in enumerate(blocks):
+                                block_json = json.dumps(block)
+                                if len(block_json) > 3000:
+                                    logger.warning(f"Block {i} is too large: {len(block_json)} chars")
+                        except Exception as json_error:
+                            logger.error(f"Invalid JSON in payload: {json_error}")
+                            # Fallback to text-only payload
+                            payload = {
+                                "response_type": "ephemeral",
+                                "text": "Charlotte's Security Investigation Steps"
+                            }
+                        if reply_ts:
+                            payload["thread_ts"] = reply_ts
+                            
+                        # Send directly to response_url
+                        response = requests.post(
+                            response_url,
+                            json=payload,
+                            headers={"Content-Type": "application/json"},
+                            timeout=5
+                        )
+                        
+                        if response.status_code == 200:
+                            logger.info(f"Successfully posted using response_url: {response.status_code}")
+                            
+                            # Also post a public message to the channel for record-keeping
+                            try:
+                                # Use chat_postMessage to create a public record
+                                logger.info(f"Posting public record to channel {channel_id}")
+                                public_message = client.chat_postMessage(
+                                    channel=channel_id,
+                                    thread_ts=reply_ts if reply_ts else None,
+                                    blocks=blocks,
+                                    text="Charlotte's Security Investigation Steps"
+                                )
+                                logger.info(f"Successfully posted public record with ts: {public_message.get('ts')}")
+                            except Exception as pub_error:
+                                logger.error(f"Failed to post public record: {pub_error}")
+                        else:
+                            logger.error(f"Failed to post using response_url: {response.status_code}, {response.text[:100]}")
+                            raise Exception(f"Error posting to response_url: {response.status_code}")
+                    
+                    # Fallback to direct chat.postMessage (requires bot to be in channel)
+                    else:
+                        # If we have a reply_ts, post as a thread reply
+                        if reply_ts:
+                            logger.info(f"Posting directly to channel {channel_id} as thread reply to {reply_ts}")
+                            client.chat_postMessage(
+                                channel=channel_id,
+                                thread_ts=reply_ts,
+                                blocks=blocks,
+                                text="Charlotte's Security Investigation Steps"
+                            )
+                            logger.info(f"Successfully posted thread reply")
+                        else:
+                            # If no reply_ts, post as a new message
+                            logger.info(f"Posting directly to channel {channel_id} as a new message")
+                            client.chat_postMessage(
+                                channel=channel_id,
+                                blocks=blocks,
+                                text="Charlotte's Security Investigation Steps"
+                            )
+                            logger.info(f"Successfully posted new message")
+                
+                except Exception as api_error:
+                    error_message = str(api_error)
+                    logger.error(f"Failed to post response: {error_message}")
+                    
+                    # One last try - if we have the response_url from the original command
+                    if response_url and "response_url" not in error_message:
+                        try:
+                            logger.info("Attempting one last try with response_url")
+                            
+                            # Simplified payload - just text as a fallback
+                            fallback_payload = {
+                                "response_type": "ephemeral",
+                                "text": "Charlotte's Security Investigation Steps could not be displayed with full formatting. Please invite the bot to the channel for better formatting."
+                            }
+                            
+                            requests.post(
+                                response_url,
+                                json=fallback_payload,
+                                headers={"Content-Type": "application/json"},
+                                timeout=5
+                            )
+                            
+                            logger.info("Posted fallback message using response_url")
+                        except Exception as final_error:
+                            logger.error(f"Final fallback attempt failed: {final_error}")
+                
+                # Trigger Salesforce flow if configured
+                if os.getenv("HEROKU_APPLINK_URL"):
+                    try:
+                        # Log the Heroku AppLink URL (truncated for security)
+                        applink_url = os.getenv("HEROKU_APPLINK_URL")
+                        logger.info(f"Attempting to trigger Salesforce flow at {applink_url[:20]}...{applink_url[-10:] if applink_url else 'None'}")
+                        
+                        # Create a more concise payload to avoid size issues
+                        salesforce_payload = {
+                            "incident_data": {
+                                "source": "Security Agent",
+                                "type": "Investigation",
+                                "details": {
+                                    "article_id": article_id,
+                                    "prompt": user_prompt[:500] if user_prompt else "",  # Truncate for reasonable size
+                                    "channel_id": channel_id,
+                                    "thread_ts": thread_ts,
+                                    "timestamp": datetime.now().isoformat()
+                                }
+                            },
+                            "query_text": user_prompt[:100] if user_prompt else ""  # Short version for indexing
+                        }
+                        
+                        # Check if the endpoint exists before sending
+                        logger.info("Checking if Salesforce endpoint exists...")
+                        endpoint_url = f"{os.getenv('HEROKU_APPLINK_URL')}/api/agentforce/security-triage"
+                        
+                        # First try a HEAD request to see if endpoint exists
+                        head_response = requests.head(
+                            endpoint_url,
+                            headers={
+                                "Authorization": f"Bearer {os.getenv('HEROKU_APPLINK_TOKEN')}",
+                                "Content-Type": "application/json"
+                            },
+                            timeout=3
+                        )
+                        
+                        if head_response.status_code >= 400:
+                            logger.warning(f"Salesforce endpoint may not exist (status: {head_response.status_code})")
+                        
+                        # Send the actual payload
+                        logger.info(f"Sending payload to Salesforce endpoint")
+                        response = requests.post(
+                            endpoint_url,
+                            json=salesforce_payload,
+                            headers={
+                                "Authorization": f"Bearer {os.getenv('HEROKU_APPLINK_TOKEN')}",
+                                "Content-Type": "application/json"
+                            },
+                            timeout=5
+                        )
+                        
+                        # Log detailed response information
+                        logger.info(f"Salesforce AgentForce trigger status: {response.status_code}")
+                        if response.status_code >= 400:
+                            logger.error(f"Salesforce API error: {response.text[:200] if response.text else 'No response body'}")
+                            
+                            # If endpoint not found, log environment configuration
+                            if response.status_code == 404:
+                                logger.error("Salesforce endpoint not found. Please verify HEROKU_APPLINK_URL is correct.")
+                                logger.error(f"Current endpoint URL: {endpoint_url}")
+                        else:
+                            logger.info("Salesforce trigger succeeded")
+                            
+                    except requests.exceptions.ConnectionError as conn_error:
+                        logger.error(f"Connection error to Salesforce endpoint: {conn_error}")
+                        logger.error("Check if the Heroku AppLink server is running and accessible")
+                    except Exception as sf_error:
+                        logger.error(f"Error triggering Salesforce flow: {sf_error}")
+                        logger.error(traceback.format_exc())
+                else:
+                    logger.warning("HEROKU_APPLINK_URL not configured, skipping Salesforce integration")
+                
+            except Exception as e:
+                logger.error(f"Error in charlotte_modal_handler: {e}")
+                logger.error(f"Stack trace: {traceback.format_exc()}")
+                
+                # Try to send an ephemeral message to the user
+                if channel_id and user_id:
+                    try:
+                        client.chat_postEphemeral(
+                            channel=channel_id,
+                            user=user_id,
+                            text=f"I encountered an error processing your request: {str(e)}"
+                        )
+                    except Exception as final_error:
+                        logger.error(f"Failed completely - could not even send error message: {final_error}")
+        
+        # Register handler for Salesforce case creation button
+        def create_salesforce_case_handler(ack, body, client):
+            ack()
+            logger.info("Create Salesforce Case button clicked")
+            
+            try:
+                # Extract data from button payload
+                value_data = json.loads(body["actions"][0]["value"])
+                initial_command = value_data.get("initial_command", "")
+                user_prompt = value_data.get("user_prompt", "")
+                steps = value_data.get("steps", "")
+                article_id = value_data.get("article_id", "")
+                channel_id = value_data.get("channel_id")
+                message_ts = value_data.get("message_ts")
+                thread_ts = value_data.get("thread_ts")
+                reply_ts = value_data.get("reply_ts")
+                
+                # Get user info who clicked the button
+                user_id = body["user"]["id"]
+                
+                # Determine which message to thread from
+                target_ts = reply_ts or thread_ts or message_ts
+                
+                logger.info(f"Creating Salesforce case with data from {channel_id}, thread {target_ts}")
+                
+                # Open a modal to confirm case creation details
+                client.views_open(
+                    trigger_id=body["trigger_id"],
+                    view={
+                        "type": "modal",
+                        "callback_id": "salesforce_case_modal",
+                        "title": {
+                            "type": "plain_text",
+                            "text": "Create Security Case"
+                        },
+                        "submit": {
+                            "type": "plain_text",
+                            "text": "Create Case"
+                        },
+                        "close": {
+                            "type": "plain_text",
+                            "text": "Cancel"
+                        },
+                        "private_metadata": json.dumps({
+                            "initial_command": initial_command,
+                            "user_prompt": user_prompt,
+                            "steps": steps,
+                            "article_id": article_id,
+                            "channel_id": channel_id,
+                            "message_ts": message_ts,
+                            "thread_ts": thread_ts,
+                            "reply_ts": reply_ts
+                        }),
+                        "blocks": [
+                            {
+                                "type": "section",
+                                "text": {
+                                    "type": "mrkdwn",
+                                    "text": "*Security Case Details*"
+                                }
+                            },
+                            {
+                                "type": "input",
+                                "block_id": "case_title_block",
+                                "element": {
+                                    "type": "plain_text_input",
+                                    "action_id": "case_title_input",
+                                    "initial_value": f"Security Investigation: {user_prompt[:50]}{'...' if len(user_prompt) > 50 else ''}",
+                                    "placeholder": {
+                                        "type": "plain_text",
+                                        "text": "Enter case title"
+                                    }
+                                },
+                                "label": {
+                                    "type": "plain_text",
+                                    "text": "Case Title"
+                                }
+                            },
+                            {
+                                "type": "input",
+                                "block_id": "case_priority_block",
+                                "element": {
+                                    "type": "static_select",
+                                    "action_id": "case_priority_input",
+                                    "options": [
+                                        {
+                                            "text": {
+                                                "type": "plain_text",
+                                                "text": "High"
+                                            },
+                                            "value": "high"
+                                        },
+                                        {
+                                            "text": {
+                                                "type": "plain_text",
+                                                "text": "Medium"
+                                            },
+                                            "value": "medium"
+                                        },
+                                        {
+                                            "text": {
+                                                "type": "plain_text",
+                                                "text": "Low"
+                                            },
+                                            "value": "low"
+                                        }
+                                    ],
+                                    "initial_option": {
+                                        "text": {
+                                            "type": "plain_text",
+                                            "text": "Medium"
+                                        },
+                                        "value": "medium"
+                                    }
+                                },
+                                "label": {
+                                    "type": "plain_text",
+                                    "text": "Priority"
+                                }
+                            },
+                            {
+                                "type": "input",
+                                "block_id": "case_notes_block",
+                                "element": {
+                                    "type": "plain_text_input",
+                                    "multiline": True,
+                                    "action_id": "case_notes_input",
+                                    "initial_value": "Additional case notes or context",
+                                    "placeholder": {
+                                        "type": "plain_text",
+                                        "text": "Add any additional notes about this case"
+                                    }
+                                },
+                                "label": {
+                                    "type": "plain_text",
+                                    "text": "Notes"
+                                }
+                            }
+                        ]
+                    }
+                )
+                
+            except Exception as e:
+                logger.error(f"Error handling Create Salesforce Case button: {e}")
+                logger.error(traceback.format_exc())
+                
+                # Try to send an error message
+                if channel_id and user_id:
+                    try:
+                        client.chat_postEphemeral(
+                            channel=channel_id,
+                            user=user_id,
+                            text=f"I encountered an error creating the Salesforce case: {str(e)}"
+                        )
+                    except Exception as final_error:
+                        logger.error(f"Could not send error message: {final_error}")
+        
+        # Register handler for Salesforce case creation modal submission
+        def salesforce_case_modal_handler(ack, body, client, view):
+            ack()
+            logger.info("Salesforce case creation modal submitted")
+            
+            try:
+                # Extract data from the submission
+                private_metadata = json.loads(view["private_metadata"])
+                initial_command = private_metadata.get("initial_command", "")
+                user_prompt = private_metadata.get("user_prompt", "")
+                steps = private_metadata.get("steps", "")
+                article_id = private_metadata.get("article_id", "")
+                channel_id = private_metadata.get("channel_id")
+                message_ts = private_metadata.get("message_ts")
+                thread_ts = private_metadata.get("thread_ts")
+                reply_ts = private_metadata.get("reply_ts")
+                
+                # Extract form values
+                case_title = view["state"]["values"]["case_title_block"]["case_title_input"]["value"]
+                case_priority = view["state"]["values"]["case_priority_block"]["case_priority_input"]["selected_option"]["value"]
+                case_notes = view["state"]["values"]["case_notes_block"]["case_notes_input"]["value"]
+                
+                # Get user who submitted the form
+                user_id = body["user"]["id"]
+                
+                # Determine which message to thread from
+                target_ts = reply_ts or thread_ts or message_ts
+                
+                # Prepare the payload for Salesforce
+                salesforce_payload = {
+                    "case_data": {
+                        "source": "Security Agent",
+                        "type": "Security Investigation",
+                        "title": case_title,
+                        "priority": case_priority,
+                        "notes": case_notes,
+                        "details": {
+                            "initial_command": initial_command,
+                            "article_id": article_id,
+                            "prompt": user_prompt,  # This might be truncated from button data
+                            "steps": steps,         # This might be truncated from button data
+                            "channel_id": channel_id,
+                            "thread_ts": target_ts,
+                            "slack_user_id": user_id,
+                            "created_at": datetime.now().isoformat()
+                        }
+                    }
+                }
+                
+                # Send the payload to Salesforce via Heroku applink
+                if os.getenv("HEROKU_APPLINK_URL"):
+                    try:
+                        # Log the AppLink URL (truncated for security)
+                        applink_url = os.getenv("HEROKU_APPLINK_URL")
+                        logger.info(f"Creating Salesforce case at {applink_url[:20]}...{applink_url[-10:] if applink_url else 'None'}")
+                        
+                        # Prepare the URL
+                        endpoint_url = f"{applink_url}/api/agentforce/security-case"
+                        
+                        # First check if endpoint exists (HEAD request)
+                        try:
+                            logger.info(f"Checking if endpoint exists: {endpoint_url}")
+                            head_response = requests.head(
+                                endpoint_url,
+                                headers={
+                                    "Authorization": f"Bearer {os.getenv('HEROKU_APPLINK_TOKEN')}",
+                                    "Content-Type": "application/json"
+                                },
+                                timeout=3
+                            )
+                            
+                            if head_response.status_code >= 400:
+                                logger.warning(f"Salesforce case endpoint may not exist (status: {head_response.status_code})")
+                        except Exception as head_error:
+                            logger.warning(f"Error checking endpoint: {head_error}")
+                        
+                        # Send the actual case creation request
+                        logger.info("Sending case creation request to Salesforce")
+                        response = requests.post(
+                            endpoint_url,
+                            json=salesforce_payload,
+                            headers={
+                                "Authorization": f"Bearer {os.getenv('HEROKU_APPLINK_TOKEN')}",
+                                "Content-Type": "application/json"
+                            },
+                            timeout=10
+                        )
+                        
+                        logger.info(f"Salesforce case creation status: {response.status_code}")
+                        
+                        # Detailed logging for non-success responses
+                        if response.status_code >= 400:
+                            logger.error(f"Salesforce API error: {response.text[:200] if response.text else 'No response body'}")
+                            if response.status_code == 404:
+                                logger.error("Salesforce endpoint not found. Check HEROKU_APPLINK_URL configuration.")
+                        
+                        # Get the case number from the response if available
+                        case_number = None
+                        try:
+                            response_data = response.json()
+                            case_number = response_data.get("case_number")
+                            logger.info(f"Created Salesforce case number: {case_number}")
+                        except:
+                            logger.warning("Could not extract case number from response")
+                        
+                        # Send confirmation message to the channel
+                        if response.status_code < 300:
+                            confirmation_text = f"✅ Security case {case_number or ''} created successfully in Salesforce."
+                            if case_number:
+                                confirmation_text += f" Case #{case_number}"
+                        else:
+                            confirmation_text = f"⚠️ There was an issue creating the Salesforce case. Status: {response.status_code}"
+                        
+                        # Post confirmation as a thread reply
+                        if target_ts:
+                            client.chat_postMessage(
+                                channel=channel_id,
+                                thread_ts=target_ts,
+                                text=confirmation_text
+                            )
+                        else:
+                            client.chat_postMessage(
+                                channel=channel_id,
+                                text=confirmation_text
+                            )
+                    except Exception as sf_error:
+                        logger.error(f"Error creating Salesforce case: {sf_error}")
+                        logger.error(traceback.format_exc())
+                        
+                        # Send error message
+                        if channel_id:
+                            error_text = f"⚠️ Error creating Salesforce case: {str(sf_error)}"
+                            if target_ts:
+                                client.chat_postMessage(
+                                    channel=channel_id,
+                                    thread_ts=target_ts,
+                                    text=error_text
+                                )
+                            else:
+                                client.chat_postMessage(
+                                    channel=channel_id,
+                                    text=error_text
+                                )
+                else:
+                    logger.warning("HEROKU_APPLINK_URL not configured, cannot create Salesforce case")
+                    
+                    # Send warning message
+                    if channel_id:
+                        warning_text = "⚠️ Salesforce integration is not configured. Contact your system administrator."
+                        if target_ts:
+                            client.chat_postMessage(
+                                channel=channel_id,
+                                thread_ts=target_ts,
+                                text=warning_text
+                            )
+                        else:
+                            client.chat_postMessage(
+                                channel=channel_id,
+                                text=warning_text
+                            )
+                            
+            except Exception as e:
+                logger.error(f"Error in salesforce_case_modal_handler: {e}")
+                logger.error(f"Stack trace: {traceback.format_exc()}")
+                
+                # Try to send an error message
+                if channel_id:
+                    try:
+                        client.chat_postEphemeral(
+                            channel=channel_id,
+                            user=user_id,
+                            text=f"I encountered an error creating the Salesforce case: {str(e)}"
+                        )
+                    except Exception as final_error:
+                        logger.error(f"Could not send error message: {final_error}")
+        
+        # Register action and view handlers
+        self.app.action("create_salesforce_case")(create_salesforce_case_handler)
+        self.app.view("salesforce_case_modal")(salesforce_case_modal_handler)
+        
+        self.app.view("charlotte_modal")(charlotte_modal_handler)
         
         logger.info("Successfully registered all handlers")
     
     def handle_security_command_wrapper(self, ack, body, respond):
         """Non-async wrapper for the async security command handler."""
-        # First acknowledge the request
-        ack()
+        # Detailed logging for debugging dispatch_failed errors
+        logger.info(f"Received /security command: {body.get('command')} {body.get('text', '')}")
+        logger.info(f"Command body: {json.dumps(body)[:500]}...")
         
-        # Create a function to process the command in the background
-        def process_command():
-            try:
-                # Extract command text
-                text = body.get("text", "").strip()
-                user_id = body.get("user_id")
-                channel_id = body.get("channel_id")
-                
-                # If no command text provided, show help
-                if not text or text.lower() == "help":
-                    help_text = self._generate_help_message()
-                    respond(text=help_text)
-                    return
-                
-                # Send initial response
-                loading_text = f"Processing your request: `{text[:50]}{'...' if len(text) > 50 else ''}`"
-                respond(text=loading_text)
-                
-                # Process the request
-                result = self.security_agent.process_command(text)
-                
-                # Send response based on result format
-                if isinstance(result, dict) and "original_results" in result:
-                    # Check if we should use block formatting with buttons
-                    if result.get("use_blocks", False):
-                        # Format results using blocks to include the Ask Charlotte button
-                        formatted_blocks = self.security_agent._format_slack_blocks(result["original_results"])
-                        
-                        # Send blocks using the respond function, not direct API call
-                        respond(
-                            blocks=formatted_blocks,
-                            text=f"Found {len(result['original_results'])} relevant security knowledge articles"
-                        )
-                    else:
-                        # Use the existing text-based formatting
-                        for i, result_item in enumerate(result["original_results"]):
-                            # Get title and content
-                            title = result_item.get("title", "Untitled")
-                            content = result_item.get("content", "")
-                            guidance = result_item.get("guidance", "")
-                            
-                            # Clean up any remaining formatting that Claude might have included
-                            # Remove any lines that look like headers (start with # or have : at the end)
-                            guidance_lines = guidance.split('\n')
-                            cleaned_lines = []
-                            for line in guidance_lines:
-                                line = line.strip()
-                                # Skip empty lines
-                                if not line:
-                                    continue
-                                # Skip lines that look like headers
-                                if line.startswith('#') or line.startswith('*') or line.endswith(':'):
-                                    continue
-                                # Add the line to our cleaned list
-                                cleaned_lines.append(line)
-                            
-                            # Join lines back into a single paragraph
-                            guidance = ' '.join(cleaned_lines)
-                            
-                            # Create a Slack-friendly formatted message
-                            # Title is bold, content is regular text
-                            message = f"*{i+1}. {title}*\n{content}"
-                            
-                            # Add guidance if it exists as a natural paragraph
-                            if guidance:
-                                message += f"\n\nInvestigation Prompt:\n{guidance}"
-                            
-                            # Send the combined message
-                            respond(text=message)
-                elif isinstance(result, dict) and "message" in result:
-                    respond(text=result["message"])
-                else:
-                    respond(text="I couldn't process your request properly.")
+        try:
+            # First acknowledge the request
+            logger.info("Attempting to acknowledge Slack command...")
+            ack()
+            logger.info("Successfully acknowledged Slack command")
+        
+            # Store the response_url for later use
+            response_url = body.get("response_url")
+            if response_url:
+                logger.info(f"Captured response_url from slash command: {response_url[:30]}...")
+            else:
+                logger.warning("No response_url found in slash command body")
+        
+            # Store the original command
+            original_command = body.get("command", "") + " " + body.get("text", "").strip()
+            logger.info(f"Original command: {original_command}")
+            
+            # Create a function to process the command in the background
+            def process_command():
+                try:
+                    # Extract command text
+                    text = body.get("text", "").strip()
+                    user_id = body.get("user_id")
+                    channel_id = body.get("channel_id")
                     
-            except Exception as e:
-                error_message = f"I encountered an error processing your request: {str(e)}"
-                logging.error(f"Error processing security command: {e}")
-                logging.error(traceback.format_exc())
-                respond(text=error_message)
-        
-        # Run in a separate thread to avoid blocking
-        import threading
-        thread = threading.Thread(target=process_command)
-        thread.daemon = True
-        thread.start()
+                    # If no command text provided, show help
+                    if not text or text.lower() == "help":
+                        help_text = self._generate_help_message()
+                        respond(text=help_text)
+                        return
+                    
+                    # Send initial response
+                    loading_text = f"Processing your request: `{text[:50]}{'...' if len(text) > 50 else ''}`"
+                    respond(text=loading_text)
+                    
+                    # Process the request
+                    result = self.security_agent.process_command(text)
+                    
+                    # Send response based on result format
+                    if isinstance(result, dict) and "original_results" in result:
+                        # Check if we should use block formatting with buttons
+                        if result.get("use_blocks", False):
+                            # Format results using blocks to include the Ask Charlotte button
+                            # Pass the response_url and original command to be included in button metadata
+                            formatted_blocks = self.security_agent._format_slack_blocks(
+                                result["original_results"], 
+                                response_url=response_url,
+                                initial_command=original_command
+                            )
+                            
+                            # Send blocks using the respond function, not direct API call
+                            respond(
+                                blocks=formatted_blocks,
+                                text=f"Found {len(result['original_results'])} relevant security knowledge articles"
+                            )
+                        else:
+                            # Use the existing text-based formatting
+                            for i, result_item in enumerate(result["original_results"]):
+                                # Get title and content
+                                title = result_item.get("title", "Untitled")
+                                content = result_item.get("content", "")
+                                guidance = result_item.get("guidance", "")
+                                
+                                # Clean up any remaining formatting that Claude might have included
+                                # Remove any lines that look like headers (start with # or have : at the end)
+                                guidance_lines = guidance.split('\n')
+                                cleaned_lines = []
+                                for line in guidance_lines:
+                                    line = line.strip()
+                                    # Skip empty lines
+                                    if not line:
+                                        continue
+                                    # Skip lines that look like headers
+                                    if line.startswith('#') or line.startswith('*') or line.endswith(':'):
+                                        continue
+                                    # Add the line to our cleaned list
+                                    cleaned_lines.append(line)
+                                
+                                # Join lines back into a single paragraph
+                                guidance = ' '.join(cleaned_lines)
+                                
+                                # Create a Slack-friendly formatted message
+                                # Title is bold, content is regular text
+                                message = f"*{i+1}. {title}*\n{content}"
+                                
+                                # Add guidance if it exists as a natural paragraph
+                                if guidance:
+                                    message += f"\n\nInvestigation Prompt:\n{guidance}"
+                                
+                                # Send the combined message
+                                respond(text=message)
+                    elif isinstance(result, dict) and "message" in result:
+                        respond(text=result["message"])
+                    else:
+                        respond(text="I couldn't process your request properly.")
+                        
+                except Exception as e:
+                    error_message = f"I encountered an error processing your request: {str(e)}"
+                    logging.error(f"Error processing security command: {e}")
+                    logging.error(traceback.format_exc())
+                    respond(text=error_message)
+            
+            # Run in a separate thread to avoid blocking
+            import threading
+            thread = threading.Thread(target=process_command)
+            thread.daemon = True
+            thread.start()
+        except Exception as e:
+            logger.error(f"Error handling security command: {e}")
+            logger.error(traceback.format_exc())
+            respond(text="I encountered an error processing your request. Please try again later.")
     
     async def handle_message(self, event):
         """Handle message events."""
@@ -523,395 +1347,26 @@ class SlackHandler:
                 text=text
             ), error_message)
     
-    async def handle_ask_charlotte(self, ack, body, client):
-        """Handle the Ask Charlotte button click to generate step-by-step investigation steps."""
-        try:
-            # Acknowledge the request immediately
-            await ack()
-            
-            # Log the entire body for debugging
-            logger.debug(f"Ask Charlotte button clicked with body: {json.dumps(body)[:1000]}...")
-            
-            # Extract data
-            channel_id = body["channel"]["id"]
-            thread_ts = body.get("message", {}).get("thread_ts") or body.get("message", {}).get("ts")
-            user_id = body["user"]["id"]
-            
-            # Parse the value from the button
-            try:
-                value_data = json.loads(body["actions"][0]["value"])
-                title = value_data.get("title", "Security Investigation")
-                guidance = value_data.get("guidance", "")
-                article_id = value_data.get("article_id", "unknown")
-                logger.info(f"Parsed button value: title='{title[:30]}...', article_id='{article_id}', guidance length={len(guidance)}")
-            except (json.JSONDecodeError, KeyError, IndexError) as e:
-                logger.error(f"Error parsing button value: {e}")
-                title = "Security Investigation"
-                guidance = ""
-                article_id = "unknown"
-            
-            # Open a modal dialog for the user to edit/confirm the prompt
-            try:
-                logger.info(f"Opening modal dialog for user {user_id} in channel {channel_id}")
-                result = await client.views_open(
-                    trigger_id=body["trigger_id"],
-                    view={
-                        "type": "modal",
-                        "callback_id": "charlotte_modal",
-                        "title": {
-                            "type": "plain_text",
-                            "text": "Ask Charlotte"
-                        },
-                        "submit": {
-                            "type": "plain_text",
-                            "text": "Submit"
-                        },
-                        "close": {
-                            "type": "plain_text",
-                            "text": "Cancel"
-                        },
-                        "private_metadata": json.dumps({
-                            "channel_id": channel_id,
-                            "thread_ts": thread_ts,
-                            "article_id": article_id
-                        }),
-                        "blocks": [
-                            {
-                                "type": "section",
-                                "text": {
-                                    "type": "mrkdwn",
-                                    "text": f"*Please edit or confirm your request to Charlotte about:*\n{title}"
-                                }
-                            },
-                            {
-                                "type": "input",
-                                "block_id": "prompt_block",
-                                "element": {
-                                    "type": "plain_text_input",
-                                    "multiline": True,
-                                    "action_id": "prompt_input",
-                                    "initial_value": guidance,
-                                    "placeholder": {
-                                        "type": "plain_text",
-                                        "text": "Edit your request to Charlotte..."
-                                    }
-                                },
-                                "label": {
-                                    "type": "plain_text",
-                                    "text": "Security Guidance Request"
-                                }
-                            }
-                        ]
-                    }
-                )
-                logger.debug(f"Successfully opened modal: {result}")
-            except Exception as modal_error:
-                logger.error(f"Error opening modal: {modal_error}")
-                logger.error(traceback.format_exc())
-                error_message = "I had trouble opening the dialog. Please try again later."
-                await client.chat_postMessage(
-                    channel=channel_id,
-                    thread_ts=thread_ts,
-                    text=error_message
-                )
-        
-        except Exception as e:
-            logger.error(f"Error handling Ask Charlotte button: {e}")
-            logger.error(traceback.format_exc())
-            try:
-                await client.chat_postMessage(
-                    channel=body["channel"]["id"],
-                    thread_ts=body.get("message", {}).get("thread_ts"),
-                    text=f"I encountered an error processing your request: {str(e)}"
-                )
-            except Exception as msg_error:
-                logger.error(f"Failed to send error message: {msg_error}")
-    
-    # Add view submission handler for the modal
-    async def handle_charlotte_submission(self, ack, body, client):
-        """Handle the submission of the Charlotte modal dialog."""
-        try:
-            # Acknowledge the request immediately
-            await ack()
-            
-            # Log the submission for debugging
-            logger.debug(f"Charlotte modal submitted with body: {json.dumps(body)[:1000]}...")
-            
-            # Extract data from the submission
-            view = body["view"]
-            private_metadata = json.loads(view["private_metadata"])
-            channel_id = private_metadata["channel_id"]
-            thread_ts = private_metadata["thread_ts"]
-            article_id = private_metadata["article_id"]
-            
-            logger.info(f"Processing Charlotte modal submission for article_id: {article_id} in channel: {channel_id}")
-            
-            # Get the user's edited prompt
-            user_prompt = view["state"]["values"]["prompt_block"]["prompt_input"]["value"]
-            logger.info(f"User prompt length: {len(user_prompt)} characters")
-            
-            # Send a loading message
-            loading_message = "Processing your request with Charlotte..."
-            loading_response = await client.chat_postMessage(
-                channel=channel_id,
-                thread_ts=thread_ts,
-                text=loading_message
-            )
-            loading_ts = loading_response["ts"]
-            
-            # Process the request with Charlotte (Heroku Inference)
-            try:
-                logger.info("Starting Charlotte request processing")
-                
-                # 1. Process with Heroku Inference for the 10-step analysis
-                analysis_result = await self._process_charlotte_request(user_prompt, article_id)
-                logger.info(f"Received Charlotte analysis result with {len(analysis_result)} characters")
-                
-                # 2. Send to Salesforce AgentForce via Heroku AppLink
-                logger.info("Triggering Salesforce flow")
-                salesforce_result = await self._trigger_salesforce_flow(user_prompt, article_id, channel_id, thread_ts)
-                logger.info(f"Salesforce flow result: {salesforce_result}")
-                
-                # Delete loading message
-                try:
-                    await client.chat_delete(
-                        channel=channel_id,
-                        ts=loading_ts
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to delete loading message: {e}")
-                
-                # Format and send the response
-                logger.info("Formatting Charlotte response")
-                blocks = self._format_charlotte_response(analysis_result)
-                
-                logger.info(f"Sending formatted response with {len(blocks)} blocks")
-                response = await client.chat_postMessage(
-                    channel=channel_id,
-                    thread_ts=thread_ts,
-                    blocks=blocks
-                )
-                logger.info(f"Response successfully sent: {response.get('ts')}")
-                
-            except Exception as process_error:
-                logger.error(f"Error processing with Charlotte: {process_error}")
-                logger.error(f"Stack trace: {traceback.format_exc()}")
-                
-                # Delete loading message
-                try:
-                    await client.chat_delete(
-                        channel=channel_id,
-                        ts=loading_ts
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to delete loading message: {e}")
-                
-                error_message = f"I encountered an error processing your request with Charlotte: {str(process_error)}"
-                await client.chat_postMessage(
-                    channel=channel_id,
-                    thread_ts=thread_ts,
-                    text=error_message
-                )
-                
-        except Exception as e:
-            logger.error(f"Error handling Charlotte modal submission: {e}")
-            logger.error(f"Stack trace: {traceback.format_exc()}")
-    
-    async def _process_charlotte_request(self, prompt, article_id):
-        """Process the request with Charlotte via Heroku Inference."""
-        try:
-            # Get additional context about the article if possible
-            article_context = await self._get_article_context(article_id)
-            
-            # Construct the messages for the Charlotte API with enhanced context
-            system_message = """You are Charlotte, a security operations assistant that provides structured, step-by-step guidance for security investigations. 
-Your task is to analyze security guidance and convert it into a detailed, actionable 10-step process for security analysts.
-Each step should be concrete, clear, and specific to the security issue at hand."""
-            
-            user_message = f"""Based on the following security guidance prompt, provide a detailed 10-step process for investigating and addressing this security issue.
-
-CONTEXT:
-{article_context}
-
-SECURITY GUIDANCE:
-{prompt}
-
-FORMAT REQUIREMENTS:
-1. Provide exactly 10 numbered steps
-2. Each step should begin with an action verb
-3. Include specific tools, commands, or resources where applicable
-4. Keep each step concise but detailed enough to be actionable
-5. Format as a clean numbered list (1-10)
-"""
-            
-            messages = [
-                {"role": "system", "content": system_message},
-                {"role": "user", "content": user_message}
-            ]
-            
-            # Call the Heroku Inference API via the inference client
-            logger.info(f"Sending enhanced request to inference service with {len(user_message)} characters")
-            result = self.security_agent.inference_client.chat_completion(messages)
-            
-            return result
-        except Exception as e:
-            logger.error(f"Error processing Charlotte request: {e}")
-            raise
-    
-    async def _get_article_context(self, article_id):
-        """Retrieve additional context about the security article."""
-        try:
-            # Check if article_id is in a valid format
-            if not article_id or article_id == "unknown":
-                return "No additional context available for this security issue."
-            
-            # Try to get the article from the database
-            try:
-                # Use the non-async database call
-                article = self.security_agent.db_manager.get_knowledge_by_id(article_id)
-                if article:
-                    return f"Article Title: {article.title}\nCategory: {article.category if hasattr(article, 'category') else 'General'}\nContent: {article.content[:500]}..."
-            except Exception as db_error:
-                logger.warning(f"Could not retrieve article context from database: {str(db_error)}")
-            
-            # If we get here, we couldn't get article info from the database
-            return "Limited context available for this security issue."
-        except Exception as e:
-            logger.warning(f"Error getting article context: {str(e)}")
-            return "No additional context available."
-    
-    async def _trigger_salesforce_flow(self, prompt, article_id, channel_id, thread_ts):
-        """Trigger Salesforce flow via Heroku AppLink."""
-        try:
-            # Construct the payload for the Salesforce AgentForce flow
-            salesforce_payload = {
-                "incident_data": {
-                    "source": "Security Agent",
-                    "type": "Investigation",
-                    "details": {
-                        "article_id": article_id,
-                        "prompt": prompt,
-                        "channel_id": channel_id,
-                        "thread_ts": thread_ts,
-                        "timestamp": datetime.now().isoformat()
-                    }
-                },
-                "query_text": prompt
-            }
-            
-            # Get Heroku AppLink URL from environment
-            applink_url = os.getenv("HEROKU_APPLINK_URL")
-            if not applink_url:
-                logger.warning("Heroku AppLink URL not configured, skipping Salesforce integration")
-                return
-            
-            # Send the request to Heroku AppLink
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    f"{applink_url}/api/agentforce/security-triage",
-                    json=salesforce_payload,
-                    headers={
-                        "Authorization": f"Bearer {os.getenv('HEROKU_APPLINK_TOKEN')}",
-                        "Content-Type": "application/json"
-                    }
-                ) as response:
-                    if response.status != 200:
-                        response_text = await response.text()
-                        logger.error(f"Error from AppLink: {response.status} - {response_text}")
-                        raise Exception(f"AppLink returned status {response.status}")
-                    
-                    result = await response.json()
-                    logger.info(f"Successfully triggered Salesforce flow: {result.get('status')}")
-                    return result
-        except Exception as e:
-            logger.error(f"Error triggering Salesforce flow: {e}")
-            logger.error(traceback.format_exc())
-            # We'll log the error but not raise it to ensure the Charlotte response still gets sent
-            return {"status": "error", "message": str(e)}
-    
-    def _format_charlotte_response(self, response):
-        """Format the Charlotte response into Slack blocks."""
-        blocks = []
-        
-        # Add header
-        blocks.append({
-            "type": "header",
-            "text": {
-                "type": "plain_text",
-                "text": "Charlotte's Security Investigation Steps",
-                "emoji": True
-            }
-        })
-        
-        # Add divider
-        blocks.append({"type": "divider"})
-        
-        # Process the response text
-        # Check if response is formatted with numbers already
-        steps_pattern = re.compile(r"(\d+)[.)\]]\s+(.*?)(?=(?:\n\d+[.)\]]\s+)|$)", re.DOTALL)
-        matches = steps_pattern.findall(response)
-        
-        if matches:
-            # Response is already formatted with numbers
-            for step_num, step_content in matches:
-                blocks.append({
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": f"*Step {step_num}:* {step_content.strip()}"
-                    }
-                })
-        else:
-            # Split by newlines and try to create steps
-            lines = response.split('\n')
-            step_num = 1
-            
-            for line in lines:
-                line = line.strip()
-                if not line:
-                    continue
-                
-                # Check if line starts with a number already
-                if re.match(r"^\d+[.)]", line):
-                    blocks.append({
-                        "type": "section",
-                        "text": {
-                            "type": "mrkdwn",
-                            "text": f"{line}"
-                        }
-                    })
-                else:
-                    blocks.append({
-                        "type": "section",
-                        "text": {
-                            "type": "mrkdwn",
-                            "text": f"*Step {step_num}:* {line}"
-                        }
-                    })
-                    step_num += 1
-        
-        # Add note that Salesforce flow has been triggered
-        blocks.append({"type": "divider"})
-        blocks.append({
-            "type": "context",
-            "elements": [
-                {
-                    "type": "mrkdwn",
-                    "text": "_A Salesforce AgentForce workflow has been triggered for this investigation._"
-                }
-            ]
-        })
-        
-        return blocks
-    
     def start(self):
         """Start the Slack app in socket mode."""
         try:
             logger.info("Starting Slack app in Socket Mode")
+            logger.info(f"Using app token: {self.slack_app_token[:5]}...{self.slack_app_token[-5:] if self.slack_app_token else 'None'}")
+            logger.info(f"Using bot token: {self.slack_bot_token[:5]}...{self.slack_bot_token[-5:] if self.slack_bot_token else 'None'}")
+            
+            # Verify token validity before starting
+            try:
+                test_auth = self.client.auth_test()
+                logger.info(f"Auth test successful: {test_auth}")
+            except Exception as auth_error:
+                logger.error(f"Auth test failed: {auth_error}")
+                raise
+                
             handler = SocketModeHandler(self.app, self.slack_app_token)
             handler.start()
         except Exception as e:
             logger.error(f"Error starting Slack app: {str(e)}")
+            logger.error(traceback.format_exc())
             raise
 
     def _send_message_with_retry(self, message_func, text, max_retries=3, retry_delay=2):

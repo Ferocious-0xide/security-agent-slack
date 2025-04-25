@@ -181,52 +181,96 @@ Content: {content}"""
     def _process_search(self, query: str) -> Dict[str, Any]:
         """Process a search query and return formatted results."""
         try:
+            print(f"\n[AGENT] Processing search query: '{query}'")
             logger.debug(f"Processing search query: {query}")
             
-            # Get search results
-            db_results = self.db_manager.search_knowledge(query)
-            logger.info(f"Found {len(db_results)} search results for query: {query}")
+            # Get search results - explicitly limit to 5
+            db_results = self.db_manager.search_knowledge(query, limit=5)
+            # Make absolutely sure we don't exceed 5 results
+            db_results = db_results[:5]
+            
+            result_count = len(db_results)
+            print(f"[AGENT] Found {result_count} search results for query: '{query}'")
+            logger.info(f"Found {result_count} search results for query: {query}")
             
             if not db_results:
+                print("[AGENT] No search results found")
                 logger.debug("No search results found")
                 return {"message": "No results found for your query"}
             
             # Format results with guidance from Claude
             enriched_results = []
             for i, result in enumerate(db_results):
+                print(f"[AGENT] Processing result {i+1}: {result.title}")
                 logger.info(f"Processing result {i+1}: {result.title} (ID: {result.id})")
+                
+                # Extract URL if present in content
+                content = result.content
+                url = None
+                if "http" in content:
+                    # Try to extract URL from the content
+                    try:
+                        import re
+                        url_match = re.search(r'https?://[^\s]+', content)
+                        if url_match:
+                            url = url_match.group(0)
+                            # Remove trailing punctuation if any
+                            if url and url[-1] in ['.', ',', ')', ']', '"', "'"]:
+                                url = url[:-1]
+                    except Exception as e:
+                        logger.debug(f"Error extracting URL from content: {e}")
                 
                 # Create enriched result
                 enriched_result = {
+                    "id": f"article_{result.id}",
                     "title": result.title,
-                    "content": result.content,
-                    "category": result.category if hasattr(result, "category") else "General"
+                    "content": content,
+                    "category": result.category if hasattr(result, "category") else "General",
+                    "url": url
                 }
+                
+                # Print content snippet for visibility
+                content_snippet = content[:150] + "..." if len(content) > 150 else content
+                print(f"[AGENT] Content snippet: {content_snippet}")
+                if url:
+                    print(f"[AGENT] Reference URL: {url}")
                 
                 # Try to get Claude analysis but don't break if it fails
                 try:
+                    print(f"[AGENT] Getting Claude analysis for result {i+1}")
                     logger.debug(f"Getting Claude analysis for result {i+1}")
-                    analysis = self._get_claude_analysis(result.title, result.content)
+                    analysis = self._get_claude_analysis(result.title, content)
                     
                     if analysis and len(analysis) > 0:
                         logger.debug(f"Claude analysis received for result {i+1}, length: {len(analysis)}")
                         enriched_result["guidance"] = analysis
+                        # Print snippet of guidance
+                        guidance_snippet = analysis[:150] + "..." if len(analysis) > 150 else analysis
+                        print(f"[AGENT] Guidance snippet: {guidance_snippet}")
                     else:
                         logger.warning(f"No valid Claude analysis received for result {i+1}")
+                        print(f"[AGENT] No valid Claude analysis received for result {i+1}")
                         # Add a placeholder guidance to maintain consistency
                         enriched_result["guidance"] = "Unable to generate investigation prompt for this security article."
                 except Exception as e:
                     logger.error(f"Error getting Claude analysis for result {i+1}: {str(e)}")
+                    print(f"[AGENT] Error getting Claude analysis: {str(e)}")
                     enriched_result["guidance"] = "Unable to generate investigation prompt for this security article."
                 
                 enriched_results.append(enriched_result)
+                print(f"[AGENT] Added result {i+1} to enriched results")
+            
+            # Make absolutely sure we don't exceed 5 results
+            enriched_results = enriched_results[:5]
             
             # Verify we have results before formatting
             if not enriched_results:
                 logger.warning("No enriched results produced even though DB returned results")
+                print("[AGENT] Error: No enriched results produced even though database returned results")
                 return {"message": "Error processing search results"}
                 
             logger.info(f"Returning {len(enriched_results)} enriched results")
+            print(f"[AGENT] Returning {len(enriched_results)} enriched results to Slack")
             
             # Return the original enriched results for simple formatting, plus a flag to use blocks
             return {
@@ -238,102 +282,112 @@ Content: {content}"""
         except Exception as e:
             logger.error(f"Error processing search: {str(e)}")
             logger.error(f"Stack trace: {traceback.format_exc()}")
+            print(f"[AGENT ERROR] Error processing search: {str(e)}")
             return {"message": f"Error processing search: {str(e)}"}
     
-    def _format_slack_blocks(self, results: List[Dict]) -> List[Dict]:
+    def _format_slack_blocks(self, results: List[Dict], response_url: str = None, initial_command: str = None) -> List[Dict]:
         """Format enriched search results into Slack blocks."""
         blocks = []
         
         # Log how many results we're formatting
-        logger.info(f"Formatting {len(results)} search results into Slack blocks")
+        print(f"[AGENT] Formatting {len(results)} search results into Slack blocks")
+        logger.info(f"Formatting {len(results)} search results into Slack blocks with response_url: {'present' if response_url else 'not provided'}")
+        if initial_command:
+            logger.info(f"Including initial command: {initial_command}")
         
         # First block explains the results (this will be displayed as intro message by SlackHandler)
         blocks.append({
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f"*Found {len(results)} relevant security knowledge articles:*"
+                "text": f"*Found {len(results)} Security Knowledge Articles*\nReview articles and investigation prompts below."
             }
         })
         
-        # Add a divider before first article
         blocks.append({"type": "divider"})
         
+        # Add each result as an expandable section
         for i, result in enumerate(results):
-            # Log each result we're processing
-            logger.info(f"Formatting result {i+1}: {result['title']}")
+            # Extract title, content, and guidance
+            title = result.get("title", "Untitled")
+            content = result.get("content", "No content available")
+            guidance = result.get("guidance", "No guidance available")
+            article_id = result.get("id", f"article_{i+1}")
+            url = result.get("url")
             
-            # Add knowledge article with title (always make it a header to enable splitting)
-            header_block = {
+            # Add article header
+            blocks.append({
                 "type": "header",
                 "text": {
                     "type": "plain_text",
-                    "text": f"{i+1}. {result['title']}",
+                    "text": f"{i+1}. {title}",
                     "emoji": True
                 }
-            }
-            blocks.append(header_block)
-            logger.debug(f"Added header block for article {i+1}: {result['title']}")
+            })
             
-            # Add content block - keep it simple
-            content_text = result['content']
-            if len(content_text) > 2000:  # Be very conservative with text length
-                content_text = content_text[:2000] + "..."
+            # Add article content
+            content_text = content[:1000] + "..." if len(content) > 1000 else content
+            
+            # Append URL if available
+            if url:
+                content_text += f"\n\n<{url}|View reference documentation>"
                 
-            content_block = {
+            blocks.append({
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
                     "text": content_text
                 }
+            })
+            
+            # Add investigation prompt header and content
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": "*Investigation Prompt:*\n" + guidance
+                }
+            })
+            
+            # Add button for Ask Charlotte flow
+            button_value = {
+                "title": title,
+                "guidance": guidance,
+                "article_id": article_id,
+                "original_message": True
             }
-            blocks.append(content_block)
             
-            # Add Claude analysis if present
-            if "guidance" in result and result["guidance"]:
-                guidance = result["guidance"]
-                if len(guidance) > 2000:  # Be very conservative with text length
-                    guidance = guidance[:2000] + "..."
-                    
-                logger.debug(f"Adding guidance for article {i+1} with length {len(guidance)}")
+            # Include response_url if provided
+            if response_url:
+                button_value["response_url"] = response_url
                 
-                blocks.append({
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": f"*Investigation Prompt:*\n{guidance}"
+            # Include initial_command if provided
+            if initial_command:
+                button_value["initial_command"] = initial_command
+                
+            blocks.append({
+                "type": "actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {
+                            "type": "plain_text",
+                            "text": "Ask Charlotte 🔎",
+                            "emoji": True
+                        },
+                        "value": json.dumps(button_value),
+                        "action_id": "ask_charlotte",
+                        "style": "primary"
                     }
-                })
-                
-                # Add "Ask Charlotte" button to get a step-by-step process
-                blocks.append({
-                    "type": "actions",
-                    "elements": [
-                        {
-                            "type": "button",
-                            "text": {
-                                "type": "plain_text",
-                                "text": "Ask Charlotte for steps",
-                                "emoji": True
-                            },
-                            "style": "primary",
-                            "value": json.dumps({
-                                "article_id": result.get("id", f"article_{i}"),
-                                "title": result["title"],
-                                "guidance": guidance
-                            }),
-                            "action_id": "ask_charlotte"
-                        }
-                    ]
-                })
-            else:
-                logger.warning(f"No guidance found for article {i+1}: {result['title']}")
+                ]
+            })
             
-            # Add a divider between articles
+            # Add divider between results
             if i < len(results) - 1:
                 blocks.append({"type": "divider"})
         
-        logger.info(f"Formatted results into {len(blocks)} Slack blocks with {len(results)} articles")
+        logger.debug(f"Created {len(blocks)} Slack blocks for search results")
+        print(f"[AGENT] Created {len(blocks)} Slack blocks for search results")
         return blocks
     
     async def process_slack_event(self, event: Dict) -> Dict:
