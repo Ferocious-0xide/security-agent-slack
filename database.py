@@ -3,7 +3,7 @@ from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.exc import SQLAlchemyError
 from typing import List, Optional
 import logging
-from models import Base, SecurityKnowledge, SecurityIncident, IncidentKnowledgeReference, SeverityLevel
+from models import Base, SecurityKnowledge, SecurityIncident, IncidentKnowledgeReference, SeverityLevel, UserPrompt
 from heroku_inference import InferenceClient
 import os
 from dotenv import load_dotenv
@@ -42,7 +42,7 @@ class DatabaseManager:
         finally:
             db.close()
     
-    def add_security_knowledge(self, title: str, content: str, category: str) -> Optional[SecurityKnowledge]:
+    def add_security_knowledge(self, title: str, content: str, category: str, guidance: str = None) -> Optional[SecurityKnowledge]:
         """Add new security knowledge to the database using direct SQL."""
         conn = None
         try:
@@ -87,10 +87,17 @@ class DatabaseManager:
                     vector_conn = psycopg2.connect(os.getenv("DATABASE_URL"))
                     try:
                         vector_cursor = vector_conn.cursor()
-                        vector_cursor.execute(
-                            "INSERT INTO security_knowledge (title, content, category, embedding) VALUES (%s, %s, %s, %s::vector) RETURNING id",
-                            (title, content, category, embedding)
-                        )
+                        # Include guidance in the SQL if provided
+                        if guidance:
+                            vector_cursor.execute(
+                                "INSERT INTO security_knowledge (title, content, category, embedding, guidance) VALUES (%s, %s, %s, %s::vector, %s) RETURNING id",
+                                (title, content, category, embedding, guidance)
+                            )
+                        else:
+                            vector_cursor.execute(
+                                "INSERT INTO security_knowledge (title, content, category, embedding) VALUES (%s, %s, %s, %s::vector) RETURNING id",
+                                (title, content, category, embedding)
+                            )
                         knowledge_id = vector_cursor.fetchone()[0]
                         vector_conn.commit()
                         logger.debug(f"Inserted knowledge with vector embedding, id: {knowledge_id}")
@@ -106,10 +113,16 @@ class DatabaseManager:
             
             # If vector insertion failed or wasn't available, insert without embedding
             if knowledge_id is None:
-                cursor.execute(
-                    "INSERT INTO security_knowledge (title, content, category) VALUES (%s, %s, %s) RETURNING id",
-                    (title, content, category)
-                )
+                if guidance:
+                    cursor.execute(
+                        "INSERT INTO security_knowledge (title, content, category, guidance) VALUES (%s, %s, %s, %s) RETURNING id",
+                        (title, content, category, guidance)
+                    )
+                else:
+                    cursor.execute(
+                        "INSERT INTO security_knowledge (title, content, category) VALUES (%s, %s, %s) RETURNING id",
+                        (title, content, category)
+                    )
                 knowledge_id = cursor.fetchone()[0]
                 conn.commit()
                 logger.debug(f"Inserted knowledge without vector embedding, id: {knowledge_id}")
@@ -119,7 +132,8 @@ class DatabaseManager:
                 id=knowledge_id,
                 title=title,
                 content=content,
-                category=category
+                category=category,
+                guidance=guidance
             )
             
             return knowledge
@@ -189,12 +203,30 @@ class DatabaseManager:
                             sql_params.extend([f"%{term}%", f"%{term}%"])
                     
                     if sql_conditions:
-                        sql = f"""
-                            SELECT id, title, content, category 
-                            FROM security_knowledge 
-                            WHERE {' OR '.join(sql_conditions)}
-                            LIMIT %s
-                        """
+                        # First check if guidance column exists
+                        try:
+                            cursor.execute("SELECT column_name FROM information_schema.columns WHERE table_name='security_knowledge' AND column_name='guidance'")
+                            guidance_exists = cursor.fetchone() is not None
+                        except Exception as e:
+                            logger.debug(f"Error checking guidance column: {e}")
+                            guidance_exists = False
+                            
+                        # Construct SQL based on whether guidance column exists
+                        if guidance_exists:
+                            sql = f"""
+                                SELECT id, title, content, category, guidance 
+                                FROM security_knowledge 
+                                WHERE {' OR '.join(sql_conditions)}
+                                LIMIT %s
+                            """
+                        else:
+                            sql = f"""
+                                SELECT id, title, content, category 
+                                FROM security_knowledge 
+                                WHERE {' OR '.join(sql_conditions)}
+                                LIMIT %s
+                            """
+                        
                         # Ensure limit is always applied
                         sql_params.append(min(limit, 5))  # Never exceed 5 results
                         
@@ -210,7 +242,8 @@ class DatabaseManager:
                                 id=row[0],
                                 title=row[1],
                                 content=row[2],
-                                category=row[3]
+                                category=row[3],
+                                guidance=row[4] if len(row) > 4 else None
                             )
                             results.append(knowledge)
                             print(f"[SEARCH RESULT] #{knowledge.id}: {knowledge.title} (Category: {knowledge.category})")
@@ -234,12 +267,30 @@ class DatabaseManager:
                                 # Try different distance methods (these work even if pgvector isn't fully available)
                                 for distance_method in ["<->", "cosine_distance", "l2_distance"]:
                                     try:
-                                        sql = f"""
-                                            SELECT id, title, content, category
-                                            FROM security_knowledge
-                                            ORDER BY embedding {distance_method} %s::vector
-                                            LIMIT %s
-                                        """
+                                        # First check if guidance column exists
+                                        try:
+                                            vector_cursor.execute("SELECT column_name FROM information_schema.columns WHERE table_name='security_knowledge' AND column_name='guidance'")
+                                            guidance_exists = vector_cursor.fetchone() is not None
+                                        except Exception as e:
+                                            logger.debug(f"Error checking guidance column: {e}")
+                                            guidance_exists = False
+                                            
+                                        # Construct SQL based on whether guidance column exists
+                                        if guidance_exists:
+                                            sql = f"""
+                                                SELECT id, title, content, category, guidance
+                                                FROM security_knowledge
+                                                ORDER BY embedding {distance_method} %s::vector
+                                                LIMIT %s
+                                            """
+                                        else:
+                                            sql = f"""
+                                                SELECT id, title, content, category
+                                                FROM security_knowledge
+                                                ORDER BY embedding {distance_method} %s::vector
+                                                LIMIT %s
+                                            """
+                                        
                                         vector_cursor.execute(sql, (embeddings[0], min(limit, 5)))
                                         vector_rows = vector_cursor.fetchall()
                                         
@@ -254,7 +305,8 @@ class DatabaseManager:
                                                     id=row[0],
                                                     title=row[1],
                                                     content=row[2],
-                                                    category=row[3]
+                                                    category=row[3],
+                                                    guidance=row[4] if len(row) > 4 else None
                                                 )
                                                 vector_results.append(knowledge)
                                                 print(f"[VECTOR RESULT] #{knowledge.id}: {knowledge.title}")
@@ -309,8 +361,21 @@ class DatabaseManager:
                 print("[SEARCH] Attempting fallback query...")
                 conn = self.engine.raw_connection()
                 cursor = conn.cursor()
+                
+                # Check if guidance column exists first
+                try:
+                    cursor.execute("SELECT column_name FROM information_schema.columns WHERE table_name='security_knowledge' AND column_name='guidance'")
+                    guidance_exists = cursor.fetchone() is not None
+                except Exception as e:
+                    logger.debug(f"Error checking guidance column: {e}")
+                    guidance_exists = False
+                
                 # Use a hard limit of 5 results
-                cursor.execute("SELECT id, title, content, category FROM security_knowledge LIMIT %s", (min(limit, 5),))
+                if guidance_exists:
+                    cursor.execute("SELECT id, title, content, category, guidance FROM security_knowledge LIMIT %s", (min(limit, 5),))
+                else:
+                    cursor.execute("SELECT id, title, content, category FROM security_knowledge LIMIT %s", (min(limit, 5),))
+                
                 rows = cursor.fetchall()
                 
                 fallback_results = []
@@ -319,7 +384,8 @@ class DatabaseManager:
                         id=row[0],
                         title=row[1],
                         content=row[2],
-                        category=row[3]
+                        category=row[3],
+                        guidance=row[4] if len(row) > 4 else None
                     )
                     fallback_results.append(knowledge)
                     print(f"[FALLBACK RESULT] #{knowledge.id}: {knowledge.title}")
@@ -407,4 +473,113 @@ class DatabaseManager:
             return incident
         except SQLAlchemyError as e:
             logger.error(f"Error updating incident status: {str(e)}")
-            raise 
+            raise
+    
+    def store_user_prompt(self, user_id: str, channel_id: str, prompt_text: str, 
+                         response_text: str = None, article_id: Optional[int] = None) -> UserPrompt:
+        """
+        Store a user prompt and its response in the database.
+        
+        Args:
+            user_id: The Slack user ID
+            channel_id: The Slack channel ID
+            prompt_text: The text of the user's prompt
+            response_text: The response from Charlotte (optional)
+            article_id: Reference to a security knowledge article (optional)
+            
+        Returns:
+            UserPrompt: The created UserPrompt object
+        """
+        session = self.SessionLocal()
+        try:
+            logger.info(f"Storing user prompt from user {user_id} in channel {channel_id}")
+            
+            # Generate embedding if possible
+            embedding = None
+            if self.inference_client and hasattr(UserPrompt, 'embedding'):
+                try:
+                    # Generate embedding using the inference client
+                    embedding_result = self.inference_client.embeddings_create(
+                        model=os.getenv("EMBEDDING_MODEL_ID", "cohere-embed-multilingual"),
+                        texts=[prompt_text]
+                    )
+                    if embedding_result and len(embedding_result) > 0:
+                        embedding = embedding_result[0]
+                        logger.debug("Successfully generated embedding for user prompt")
+                except Exception as e:
+                    logger.warning(f"Error generating embedding for user prompt: {str(e)}")
+            
+            # Create the UserPrompt object
+            user_prompt = UserPrompt(
+                user_id=user_id,
+                channel_id=channel_id,
+                prompt_text=prompt_text,
+                response_text=response_text,
+                article_id=article_id,
+                created_at=datetime.utcnow()
+            )
+            
+            # Set embedding if available
+            if embedding and hasattr(user_prompt, 'embedding'):
+                user_prompt.embedding = embedding
+            
+            # Add to session and commit
+            session.add(user_prompt)
+            session.commit()
+            
+            # Refresh to get the generated ID
+            session.refresh(user_prompt)
+            
+            logger.info(f"Successfully stored user prompt with ID {user_prompt.id}")
+            return user_prompt
+            
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Error storing user prompt: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise
+        finally:
+            session.close()
+            
+    def get_user_prompts(self, user_id: Optional[str] = None, 
+                        channel_id: Optional[str] = None, 
+                        limit: int = 100,
+                        offset: int = 0) -> List[UserPrompt]:
+        """
+        Retrieve user prompts from the database with optional filtering.
+        
+        Args:
+            user_id: Filter by Slack user ID (optional)
+            channel_id: Filter by Slack channel ID (optional)
+            limit: Maximum number of results to return
+            offset: Offset for pagination
+            
+        Returns:
+            List[UserPrompt]: List of UserPrompt objects
+        """
+        session = self.SessionLocal()
+        try:
+            query = session.query(UserPrompt)
+            
+            # Apply filters if provided
+            if user_id:
+                query = query.filter(UserPrompt.user_id == user_id)
+            if channel_id:
+                query = query.filter(UserPrompt.channel_id == channel_id)
+                
+            # Order by most recent first
+            query = query.order_by(UserPrompt.created_at.desc())
+            
+            # Apply pagination
+            query = query.limit(limit).offset(offset)
+            
+            # Execute query and return results
+            results = query.all()
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error retrieving user prompts: {str(e)}")
+            logger.error(traceback.format_exc())
+            return []
+        finally:
+            session.close() 

@@ -11,6 +11,30 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Print Slack permissions warning
+print("="*80)
+print("WARNING: IMPORTANT SLACK PERMISSION INFORMATION")
+print("="*80)
+print("Your Slack app needs the following OAuth scopes to function properly:")
+print("- app_mentions:read - current")
+print("- chat:write - current")
+print("- commands - current")
+print("- channels:join - MISSING")
+print("- groups:read - RECOMMENDED")
+print("- im:write - RECOMMENDED") 
+print("- users:read - RECOMMENDED")
+print("\nTo fix the 'Ask Charlotte' functionality in channels:")
+print("1. Go to api.slack.com/apps and select your Security Agent app")
+print("2. Navigate to 'OAuth & Permissions'")
+print("3. Under 'Scopes', add the following Bot Token Scopes:")
+print("   - channels:join")
+print("   - groups:read")
+print("   - im:write")
+print("   - users:read")
+print("4. Reinstall the app to your workspace")
+print("="*80)
+print("\n")
+
 def main():
     try:
         # Load environment variables

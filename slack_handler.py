@@ -214,16 +214,9 @@ class SlackHandler:
                 is_original_message = private_metadata.get("is_original_message", False)
                 initial_command = private_metadata.get("initial_command", "")
                 
-                # Determine which TS to use for the reply
+                # MODIFY: Never set reply_ts regardless of is_original_message
+                # Always post as a new message instead of a thread reply
                 reply_ts = None
-                if is_original_message and message_ts:
-                    # If this is a reply to a knowledge article, use message_ts
-                    reply_ts = message_ts
-                    logger.info(f"Will reply to original knowledge article message: {reply_ts}")
-                elif thread_ts:
-                    # If already in a thread, continue that thread
-                    reply_ts = thread_ts
-                    logger.info(f"Will continue existing thread: {reply_ts}")
                 
                 user_id = body.get("user", {}).get("id")
                 
@@ -247,6 +240,29 @@ class SlackHandler:
                 result = self.security_agent.inference_client.chat_completion(messages)
                 logger.info(f"Received response from inference API: {len(result)} chars")
                 
+                # Store the user prompt and response in the database
+                try:
+                    # Extract article_id without the "article_" prefix
+                    numeric_article_id = None
+                    if article_id and article_id.startswith("article_"):
+                        try:
+                            numeric_article_id = int(article_id.replace("article_", ""))
+                        except ValueError:
+                            logger.warning(f"Could not parse article_id: {article_id}")
+                    
+                    # Store in database
+                    stored_prompt = self.security_agent.db_manager.store_user_prompt(
+                        user_id=user_id,
+                        channel_id=channel_id,
+                        prompt_text=user_prompt,
+                        response_text=result,
+                        article_id=numeric_article_id
+                    )
+                    logger.info(f"Stored user prompt in database with ID: {stored_prompt.id}")
+                except Exception as db_error:
+                    logger.error(f"Error storing user prompt in database: {db_error}")
+                    # Continue processing even if database storage fails
+                
                 # Format the response
                 blocks = []
                 
@@ -260,29 +276,38 @@ class SlackHandler:
                     }
                 })
                 
-                # Add divider
+                # Add the user prompt as context
+                blocks.append({
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"*Investigation Request:*\n{user_prompt[:1000]}{'...' if len(user_prompt) > 1000 else ''}"
+                    }
+                })
+                
                 blocks.append({"type": "divider"})
                 
-                # Split the response into steps
+                # Add formatted steps, either parsing numbered list format or just as paragraphs
+                # Try to parse numbered steps first
                 steps = []
-                for line in result.split("\n"):
-                    line = line.strip()
-                    if not line:
-                        continue
-                    
-                    # Check if line starts with a number
-                    if re.match(r"^\d+[.)]", line):
-                        # Truncate step text to avoid Slack's text limits (3000 chars per section)
-                        if len(line) > 2900:
+                number_pattern = re.compile(r'^\s*(\d+)[\.:\)]?\s+(.+)$', re.MULTILINE)
+                matches = number_pattern.findall(result)
+                
+                if matches:
+                    # We have a numbered list
+                    for num, content in matches:
+                        line = f"*{num}.* {content.strip()}"
+                        # Ensure steps aren't too long for Slack
+                        if len(line) > 2900:  # Slack has a max size per block
                             line = line[:2900] + "..."
                         steps.append(line)
-                    
+                
                 # If no steps were found, just split by newlines
                 if not steps:
                     steps = [line for line in result.split("\n") if line.strip()]
                     # Ensure each step is within Slack's text limits
                     steps = [s[:2900] + "..." if len(s) > 2900 else s for s in steps]
-                    
+                
                 # Add each step as a block
                 for step in steps:
                     blocks.append({
@@ -305,7 +330,7 @@ class SlackHandler:
                             "text": "_Note: Some steps were truncated due to message size limits._"
                         }
                     })
-                    
+                
                 # Add note about Salesforce
                 blocks.append({"type": "divider"})
                 blocks.append({
@@ -352,118 +377,146 @@ class SlackHandler:
                 }
                 
                 try:
-                    # If we have a response_url, use it - this allows posting to channels without being a member
-                    if response_url:
-                        logger.info(f"Using response_url to post to channel: {response_url[:30]}...")
-                        
-                        # Prepare payload with ephemeral response type to keep the original message
-                        payload = {
-                            "response_type": "ephemeral",
-                            "blocks": blocks,
-                            "text": "Charlotte's Security Investigation Steps"
-                        }
-                        
-                        # Add thread_ts if we should reply to a thread
-                        if reply_ts:
-                            payload["thread_ts"] = reply_ts
-                        
-                        # Log truncated payload for debugging
-                        logger.debug(f"Sending payload to Slack: {json.dumps(payload)[:500]}...")
-                        
-                        # Validate JSON before sending
-                        try:
-                            # Test the JSON serialization
-                            json_payload = json.dumps(payload)
-                            # Check if any single block is too large
-                            for i, block in enumerate(blocks):
-                                block_json = json.dumps(block)
-                                if len(block_json) > 3000:
-                                    logger.warning(f"Block {i} is too large: {len(block_json)} chars")
-                        except Exception as json_error:
-                            logger.error(f"Invalid JSON in payload: {json_error}")
-                            # Fallback to text-only payload
-                            payload = {
-                                "response_type": "ephemeral",
-                                "text": "Charlotte's Security Investigation Steps"
-                            }
-                        if reply_ts:
-                            payload["thread_ts"] = reply_ts
-                            
-                        # Send directly to response_url
-                        response = requests.post(
-                            response_url,
-                            json=payload,
-                            headers={"Content-Type": "application/json"},
-                            timeout=5
-                        )
-                        
-                        if response.status_code == 200:
-                            logger.info(f"Successfully posted using response_url: {response.status_code}")
-                            
-                            # Also post a public message to the channel for record-keeping
-                            try:
-                                # Use chat_postMessage to create a public record
-                                logger.info(f"Posting public record to channel {channel_id}")
-                                public_message = client.chat_postMessage(
-                                    channel=channel_id,
-                                    thread_ts=reply_ts if reply_ts else None,
-                                    blocks=blocks,
-                                    text="Charlotte's Security Investigation Steps"
-                                )
-                                logger.info(f"Successfully posted public record with ts: {public_message.get('ts')}")
-                            except Exception as pub_error:
-                                logger.error(f"Failed to post public record: {pub_error}")
-                        else:
-                            logger.error(f"Failed to post using response_url: {response.status_code}, {response.text[:100]}")
-                            raise Exception(f"Error posting to response_url: {response.status_code}")
+                    # First, try to join the channel before posting
+                    try:
+                        logger.info(f"Attempting to join channel {channel_id} before posting")
+                        join_result = client.conversations_join(channel=channel_id)
+                        logger.info(f"Join channel result: {join_result.get('ok', False)}")
+                    except Exception as join_error:
+                        logger.warning(f"Could not join channel (this is expected for private channels): {join_error}")
                     
-                    # Fallback to direct chat.postMessage (requires bot to be in channel)
-                    else:
-                        # If we have a reply_ts, post as a thread reply
-                        if reply_ts:
-                            logger.info(f"Posting directly to channel {channel_id} as thread reply to {reply_ts}")
-                            client.chat_postMessage(
-                                channel=channel_id,
-                                thread_ts=reply_ts,
-                                blocks=blocks,
-                                text="Charlotte's Security Investigation Steps"
-                            )
-                            logger.info(f"Successfully posted thread reply")
-                        else:
-                            # If no reply_ts, post as a new message
-                            logger.info(f"Posting directly to channel {channel_id} as a new message")
-                            client.chat_postMessage(
-                                channel=channel_id,
-                                blocks=blocks,
-                                text="Charlotte's Security Investigation Steps"
-                            )
-                            logger.info(f"Successfully posted new message")
-                
+                    # Now try to post the message
+                    logger.info(f"Posting public record to channel {channel_id}")
+                    
+                    # Always post as a new message, never as a thread reply
+                    logger.info(f"Posting as a new message")
+                    public_message = client.chat_postMessage(
+                        channel=channel_id,
+                        blocks=blocks,
+                        text="Charlotte's Security Investigation Steps"
+                    )
+                    logger.info(f"Successfully posted new message with ts: {public_message.get('ts')}")
                 except Exception as api_error:
                     error_message = str(api_error)
                     logger.error(f"Failed to post response: {error_message}")
                     
-                    # One last try - if we have the response_url from the original command
-                    if response_url and "response_url" not in error_message:
+                    # If the error is "not_in_channel", attempt to invite the bot to the channel
+                    if "not_in_channel" in error_message:
                         try:
-                            logger.info("Attempting one last try with response_url")
+                            logger.info(f"Bot not in channel, attempting to notify the user")
                             
-                            # Simplified payload - just text as a fallback
-                            fallback_payload = {
-                                "response_type": "ephemeral",
-                                "text": "Charlotte's Security Investigation Steps could not be displayed with full formatting. Please invite the bot to the channel for better formatting."
-                            }
+                            # EMERGENCY FALLBACK: Use the response_url from the original button click
+                            # This URL is still valid for 30 minutes after the button was clicked
+                            if response_url:
+                                logger.info(f"Using response_url fallback: {response_url[:30]}...")
+                                
+                                # Create a simplified response
+                                simplified_response = {
+                                    "response_type": "ephemeral",
+                                    "text": "Here's your Charlotte analysis (simplified version due to channel access):",
+                                    "blocks": [
+                                        {
+                                            "type": "section",
+                                            "text": {
+                                                "type": "mrkdwn",
+                                                "text": f"*Investigation Request:*\n{user_prompt[:300]}{'...' if len(user_prompt) > 300 else ''}"
+                                            }
+                                        },
+                                        {
+                                            "type": "section",
+                                            "text": {
+                                                "type": "mrkdwn",
+                                                "text": f"*Analysis Results:*\n{result[:1500]}{'...' if len(result) > 1500 else ''}"
+                                            }
+                                        },
+                                        {
+                                            "type": "context",
+                                            "elements": [
+                                                {
+                                                    "type": "mrkdwn",
+                                                    "text": "⚠️ *I couldn't post this to the channel.* To fix this, invite me using `/invite @security_agent` and try again."
+                                                }
+                                            ]
+                                        }
+                                    ]
+                                }
+                                
+                                # Send via response_url
+                                try:
+                                    response = requests.post(
+                                        response_url,
+                                        json=simplified_response,
+                                        headers={"Content-Type": "application/json"},
+                                        timeout=5
+                                    )
+                                    logger.info(f"Response URL fallback status: {response.status_code}")
+                                    if response.status_code < 300:
+                                        logger.info("Successfully sent response via response_url")
+                                        return
+                                    else:
+                                        logger.error(f"Response URL error: {response.text[:200]}")
+                                except Exception as resp_error:
+                                    logger.error(f"Response URL fallback failed: {resp_error}")
                             
-                            requests.post(
-                                response_url,
-                                json=fallback_payload,
-                                headers={"Content-Type": "application/json"},
-                                timeout=5
-                            )
+                            # Get the user's DM channel to send instructions
+                            try:
+                                dm_channel = client.conversations_open(users=user_id)
+                                if dm_channel and dm_channel.get('ok') and dm_channel.get('channel', {}).get('id'):
+                                    dm_id = dm_channel['channel']['id']
+                                    
+                                    # Send instructions via DM with channel information
+                                    client.chat_postMessage(
+                                        channel=dm_id,
+                                        text=f"I couldn't post your Charlotte analysis in <#{channel_id}> because I'm not in that channel. Please invite me using `/invite @security_agent` in that channel, then try again."
+                                    )
+                                    
+                                    # Also send a simplified version of the analysis in the DM
+                                    client.chat_postMessage(
+                                        channel=dm_id,
+                                        text=f"*Here's your analysis (simplified version):*\n\n*Your prompt:*\n{user_prompt[:300]}{'...' if len(user_prompt) > 300 else ''}\n\n*Analysis:*\n{result[:1500]}{'...' if len(result) > 1500 else ''}"
+                                    )
+                                    
+                                    logger.info(f"Sent DM to user {user_id} with invitation instructions and simplified analysis")
+                                    return
+                                else:
+                                    logger.error(f"Could not open DM with user: {dm_channel}")
+                            except Exception as dm_error:
+                                logger.error(f"Failed to send DM: {dm_error}")
+                                
+                            # If DM fails, try one more ephemeral fallback
+                            try:
+                                # Try a different channel where the bot might be a member
+                                # This is a fallback method - it depends on the bot being in at least one channel
+                                channels_list = client.conversations_list(types="public_channel")
+                                for channel in channels_list.get('channels', []):
+                                    try:
+                                        client.chat_postEphemeral(
+                                            channel=channel['id'],
+                                            user=user_id,
+                                            text=f"I couldn't post your Charlotte analysis in <#{channel_id}> because I'm not in that channel. Please invite me using `/invite @security_agent` in that channel, then try again."
+                                        )
+                                        logger.info(f"Sent ephemeral message in fallback channel {channel['id']}")
+                                        return
+                                    except:
+                                        continue
+                            except Exception as fallback_error:
+                                logger.error(f"Final fallback attempt failed: {fallback_error}")
                             
-                            logger.info("Posted fallback message using response_url")
-                        except Exception as final_error:
-                            logger.error(f"Final fallback attempt failed: {final_error}")
+                        except Exception as invite_error:
+                            logger.error(f"Failed to handle not_in_channel error: {invite_error}")
+                    
+                    # Try using ephemeral message as a last resort
+                    try:
+                        logger.info("Attempting to post ephemeral message")
+                        client.chat_postEphemeral(
+                            channel=channel_id,
+                            user=user_id,
+                            blocks=blocks[:10],  # Truncate blocks in case of size issues
+                            text="Charlotte's Security Investigation Steps could not be displayed with full formatting."
+                        )
+                        logger.info("Posted ephemeral fallback message")
+                    except Exception as final_error:
+                        logger.error(f"Final fallback attempt failed: {final_error}")
                 
                 # Trigger Salesforce flow if configured
                 if os.getenv("HEROKU_APPLINK_URL"):

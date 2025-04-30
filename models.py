@@ -69,4 +69,22 @@ class IncidentKnowledgeReference(Base):
     knowledge = relationship("SecurityKnowledge")
     
     def __repr__(self):
-        return f"<IncidentKnowledgeReference(incident_id={self.incident_id}, knowledge_id={self.knowledge_id})>" 
+        return f"<IncidentKnowledgeReference(incident_id={self.incident_id}, knowledge_id={self.knowledge_id})>"
+
+class UserPrompt(Base):
+    __tablename__ = "user_prompts"
+    
+    id = Column(Integer, primary_key=True)
+    user_id = Column(String(100), nullable=False, index=True)  # Slack user ID
+    channel_id = Column(String(100), nullable=False, index=True)  # Slack channel ID
+    prompt_text = Column(Text, nullable=False)  # The actual prompt text
+    response_text = Column(Text, nullable=True)  # The response from Charlotte
+    article_id = Column(Integer, nullable=True)  # Optional reference to a security knowledge article
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Add a vector embedding for the prompt (for semantic search)
+    if has_pgvector:
+        embedding = Column(Vector(1024), nullable=True)
+    
+    def __repr__(self):
+        return f"<UserPrompt(id={self.id}, user_id='{self.user_id}', created_at='{self.created_at}')>" 

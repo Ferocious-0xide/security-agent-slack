@@ -54,8 +54,8 @@ class SecurityAgent:
         if missing_vars:
             raise EnvironmentError(f"Missing required environment variables: {', '.join(missing_vars)}")
     
-    def _get_claude_analysis(self, title: str, content: str) -> str:
-        """Get analysis from Claude for the security knowledge."""
+    def _get_claude_analysis(self, title: str, content: str, knowledge_id: int = None) -> str:
+        """Get analysis from Claude for the security knowledge and store it in the database."""
         # Create a cache key based on title and content
         cache_key = f"{title}:{content[:100]}"
         
@@ -99,6 +99,30 @@ Content: {content}"""
                     
                     # Cache the response
                     self.analysis_cache[cache_key] = analysis
+                    
+                    # If we have a knowledge_id, store the guidance in the database
+                    if knowledge_id:
+                        try:
+                            # Get the article from the database
+                            knowledge = self.db_manager.get_knowledge_by_id(knowledge_id)
+                            if knowledge:
+                                # Update the guidance field
+                                if not knowledge.guidance:
+                                    # Use raw SQL to update the guidance field
+                                    conn = self.db_manager.engine.raw_connection()
+                                    try:
+                                        cursor = conn.cursor()
+                                        cursor.execute(
+                                            "UPDATE security_knowledge SET guidance = %s WHERE id = %s",
+                                            (analysis, knowledge_id)
+                                        )
+                                        conn.commit()
+                                        logger.info(f"Updated guidance for knowledge article {knowledge_id}")
+                                    finally:
+                                        conn.close()
+                        except Exception as db_error:
+                            logger.error(f"Error updating guidance in database: {str(db_error)}")
+                    
                     return analysis
                 else:
                     logger.warning(f"Received invalid analysis response: {analysis}")
@@ -198,65 +222,49 @@ Content: {content}"""
                 logger.debug("No search results found")
                 return {"message": "No results found for your query"}
             
-            # Format results with guidance from Claude
+            # Process each result to enrich with guidance
             enriched_results = []
+            
             for i, result in enumerate(db_results):
                 print(f"[AGENT] Processing result {i+1}: {result.title}")
                 logger.info(f"Processing result {i+1}: {result.title} (ID: {result.id})")
                 
-                # Extract URL if present in content
-                content = result.content
-                url = None
-                if "http" in content:
-                    # Try to extract URL from the content
-                    try:
-                        import re
-                        url_match = re.search(r'https?://[^\s]+', content)
-                        if url_match:
-                            url = url_match.group(0)
-                            # Remove trailing punctuation if any
-                            if url and url[-1] in ['.', ',', ')', ']', '"', "'"]:
-                                url = url[:-1]
-                    except Exception as e:
-                        logger.debug(f"Error extracting URL from content: {e}")
+                # Extract a snippet of content
+                content_snippet = result.content[:150] + "..." if len(result.content) > 150 else result.content
+                print(f"[AGENT] Content snippet: {content_snippet}")
                 
-                # Create enriched result
+                # Create reference URL (in a real system, this would be a real URL)
+                reference_url = f"https://security-kb.example.com/{result.title.lower().replace(' ', '-')}"
+                print(f"[AGENT] Reference URL: {reference_url}")
+                
+                # Create an enriched result with guidance
                 enriched_result = {
-                    "id": f"article_{result.id}",
+                    "id": result.id,
                     "title": result.title,
-                    "content": content,
-                    "category": result.category if hasattr(result, "category") else "General",
-                    "url": url
+                    "content": result.content,
+                    "category": result.category,
+                    "reference_url": reference_url,
                 }
                 
-                # Print content snippet for visibility
-                content_snippet = content[:150] + "..." if len(content) > 150 else content
-                print(f"[AGENT] Content snippet: {content_snippet}")
-                if url:
-                    print(f"[AGENT] Reference URL: {url}")
-                
-                # Try to get Claude analysis but don't break if it fails
-                try:
+                # Check if guidance is already available in the database
+                if result.guidance:
+                    print(f"[AGENT] Using stored guidance for result {i+1}")
+                    guidance = result.guidance
+                else:
+                    # If not, get Claude analysis
                     print(f"[AGENT] Getting Claude analysis for result {i+1}")
                     logger.debug(f"Getting Claude analysis for result {i+1}")
-                    analysis = self._get_claude_analysis(result.title, content)
-                    
-                    if analysis and len(analysis) > 0:
-                        logger.debug(f"Claude analysis received for result {i+1}, length: {len(analysis)}")
-                        enriched_result["guidance"] = analysis
-                        # Print snippet of guidance
-                        guidance_snippet = analysis[:150] + "..." if len(analysis) > 150 else analysis
-                        print(f"[AGENT] Guidance snippet: {guidance_snippet}")
-                    else:
-                        logger.warning(f"No valid Claude analysis received for result {i+1}")
-                        print(f"[AGENT] No valid Claude analysis received for result {i+1}")
-                        # Add a placeholder guidance to maintain consistency
-                        enriched_result["guidance"] = "Unable to generate investigation prompt for this security article."
-                except Exception as e:
-                    logger.error(f"Error getting Claude analysis for result {i+1}: {str(e)}")
-                    print(f"[AGENT] Error getting Claude analysis: {str(e)}")
-                    enriched_result["guidance"] = "Unable to generate investigation prompt for this security article."
+                    guidance = self._get_claude_analysis(result.title, result.content, result.id)
                 
+                if guidance and len(guidance) > 0:
+                    # Truncate guidance for display
+                    guidance_snippet = guidance[:200] + "..." if len(guidance) > 200 else guidance
+                    print(f"[AGENT] Guidance snippet: {guidance_snippet}")
+                    
+                    # Add guidance to the result
+                    enriched_result["guidance"] = guidance
+                
+                # Add the enriched result
                 enriched_results.append(enriched_result)
                 print(f"[AGENT] Added result {i+1} to enriched results")
             
@@ -304,6 +312,17 @@ Content: {content}"""
             }
         })
         
+        # Add note about inviting the bot if using Ask Charlotte buttons
+        blocks.append({
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": "ℹ️ _To use the Ask Charlotte buttons, make sure the bot is in this channel. If necessary, invite it with `/invite @security_agent`._"
+                }
+            ]
+        })
+        
         blocks.append({"type": "divider"})
         
         # Add each result as an expandable section
@@ -349,22 +368,15 @@ Content: {content}"""
                 }
             })
             
-            # Add button for Ask Charlotte flow
-            button_value = {
-                "title": title,
-                "guidance": guidance,
-                "article_id": article_id,
-                "original_message": True
-            }
+            # Create interactive button with Ask Charlotte functionality
+            # Ensure that guidance is not too long for inclusion in button value
+            max_guidance_length = 500  # Slack has limit on button values
+            truncated_guidance = guidance[:max_guidance_length] if guidance else ""
             
-            # Include response_url if provided
-            if response_url:
-                button_value["response_url"] = response_url
-                
-            # Include initial_command if provided
-            if initial_command:
-                button_value["initial_command"] = initial_command
-                
+            # Create article_id that's consistently a string
+            article_id = f"article_{result['id']}" if isinstance(result['id'], int) else result['id']
+            
+            # Create the button block
             blocks.append({
                 "type": "actions",
                 "elements": [
@@ -372,12 +384,18 @@ Content: {content}"""
                         "type": "button",
                         "text": {
                             "type": "plain_text",
-                            "text": "Ask Charlotte 🔎",
+                            "text": "Ask Charlotte",
                             "emoji": True
                         },
-                        "value": json.dumps(button_value),
                         "action_id": "ask_charlotte",
-                        "style": "primary"
+                        "style": "primary",
+                        "value": json.dumps({
+                            "title": result["title"],
+                            "guidance": truncated_guidance,
+                            "article_id": article_id,
+                            "original_message": True,
+                            "initial_command": initial_command
+                        })
                     }
                 ]
             })
@@ -412,7 +430,7 @@ Content: {content}"""
                             }
                             
                             # Get Claude analysis
-                            analysis = self._get_claude_analysis(result.title, result.content)
+                            analysis = self._get_claude_analysis(result.title, result.content, result.id)
                             if analysis and not analysis.startswith("Analysis Error"):
                                 enriched_result["guidance"] = analysis
                             
@@ -445,7 +463,7 @@ Content: {content}"""
                 }
                 
                 # Get Claude analysis
-                analysis = self._get_claude_analysis(result.title, result.content)
+                analysis = self._get_claude_analysis(result.title, result.content, result.id)
                 if analysis and not analysis.startswith("Analysis Error"):
                     enriched_result["guidance"] = analysis
                 
