@@ -191,22 +191,17 @@ class SecurityAgent:
             return {"message": f"Error processing command: {str(e)}"}
             
     def _process_search(self, query: str) -> Dict[str, Any]:
-        """Process a search query and return formatted results."""
+        """Process a search query and return enriched results."""
         try:
-            print(f"\n[AGENT] Processing search query: '{query}'")
-            logger.debug(f"Processing search query: {query}")
+            print(f"[AGENT] Processing search query: '{query}'")
             
-            # Get search results - explicitly limit to 5
-            db_results = self.db_manager.search_knowledge(query, limit=5)
-            # Make absolutely sure we don't exceed 5 results
-            db_results = db_results[:5]
+            # Search the database for relevant knowledge
+            db_results = self.db_manager.search_knowledge(query)
             
-            result_count = len(db_results)
-            print(f"[AGENT] Found {result_count} search results for query: '{query}'")
-            logger.info(f"Found {result_count} search results for query: {query}")
+            logger.info(f"Found {len(db_results)} results using text search")
+            print(f"[AGENT] Found {len(db_results)} search results for query: '{query}'")
             
             if not db_results:
-                print("[AGENT] No search results found")
                 logger.debug("No search results found")
                 return {"message": "No results found for your query"}
             
@@ -221,9 +216,17 @@ class SecurityAgent:
                 content_snippet = result.content[:150] + "..." if len(result.content) > 150 else result.content
                 print(f"[AGENT] Content snippet: {content_snippet}")
                 
-                # Create reference URL (in a real system, this would be a real URL)
-                reference_url = f"https://security-kb.example.com/{result.title.lower().replace(' ', '-')}"
-                print(f"[AGENT] Reference URL: {reference_url}")
+                # Try to extract URL from content if it exists, otherwise generate a default URL
+                reference_url = None
+                url_pattern = re.compile(r'https://security-kb\.example\.com/[\w-]+')
+                url_match = url_pattern.search(result.content)
+                if url_match:
+                    reference_url = url_match.group(0)
+                    print(f"[AGENT] Found reference URL in content: {reference_url}")
+                else:
+                    # Create reference URL (in a real system, this would be a real URL)
+                    reference_url = f"https://security-kb.example.com/{result.title.lower().replace(' ', '-')}"
+                    print(f"[AGENT] Generated reference URL: {reference_url}")
                 
                 # Create an enriched result with guidance
                 enriched_result = {
