@@ -221,15 +221,10 @@ class SecurityAgent:
                     "reference_url": reference_url,
                 }
                 
-                # Check if guidance is already available in the database
-                if result.guidance:
-                    print(f"[AGENT] Using stored guidance for result {i+1}")
-                    guidance = result.guidance
-                else:
-                    # If not, get Claude analysis
-                    print(f"[AGENT] Getting Claude analysis for result {i+1}")
-                    logger.debug(f"Getting Claude analysis for result {i+1}")
-                    guidance = self._get_claude_analysis(result.title, result.content, result.id)
+                # Always get fresh Claude analysis
+                print(f"[AGENT] Getting fresh Claude analysis for result {i+1}")
+                logger.debug(f"Getting fresh Claude analysis for result {i+1}")
+                guidance = self._get_claude_analysis(result.title, result.content, result.id)
                 
                 if guidance and len(guidance) > 0:
                     # Truncate guidance for display
