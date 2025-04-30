@@ -295,7 +295,7 @@ class SecurityAgent:
             }
         })
         
-        # Add each result as a section
+        # Add each result as a separate post
         for i, result in enumerate(results):
             # Add divider between articles
             if i > 0:
@@ -312,7 +312,7 @@ class SecurityAgent:
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": title
+                    "text": f"*Knowledge Article:* {title}"
                 }
             })
             

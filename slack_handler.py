@@ -1000,12 +1000,27 @@ class SlackHandler:
                             initial_command=original_command
                         )
                         
-                        # Send blocks using the respond function
-                        respond(
-                            blocks=formatted_blocks,
-                            text=f"Found {len(result['original_results'])} relevant security knowledge articles",
-                            response_type="in_channel"
-                        )
+                        # Send each article as a separate message
+                        current_blocks = []
+                        for block in formatted_blocks:
+                            if block.get("type") == "divider" and current_blocks:
+                                # Send the current article
+                                respond(
+                                    blocks=current_blocks,
+                                    text="Security Knowledge Article",
+                                    response_type="in_channel"
+                                )
+                                current_blocks = []
+                            else:
+                                current_blocks.append(block)
+                        
+                        # Send the last article if there are remaining blocks
+                        if current_blocks:
+                            respond(
+                                blocks=current_blocks,
+                                text="Security Knowledge Article",
+                                response_type="in_channel"
+                            )
                     elif isinstance(result, dict) and "message" in result:
                         respond(text=result["message"])
                     else:
