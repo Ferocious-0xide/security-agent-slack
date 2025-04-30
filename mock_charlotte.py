@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 import anthropic
-from sentence_transformers import SentenceTransformer
+import requests
 from datetime import datetime
 import logging
 import json
@@ -42,10 +42,6 @@ if not api_key:
 # Initialize Anthropic client
 anthropic_client = anthropic.Client(api_key=api_key)
 logger.info("Anthropic client initialized successfully")
-
-# Initialize sentence-transformers model
-embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
-logger.info("Sentence-transformers model initialized successfully")
 
 # Initialize FastAPI app
 app = FastAPI(title="Mock Charlotte RAG Service")
@@ -117,9 +113,15 @@ class StatusUpdate(BaseModel):
 
 # Helper functions
 def get_embedding(text: str) -> List[float]:
-    """Get embedding for text using sentence-transformers."""
+    """Get embedding for text using Heroku managed inference addon."""
     try:
-        return embedding_model.encode(text).tolist()
+        response = requests.post(
+            os.getenv("INFERENCE_API_URL"),
+            json={"text": text},
+            headers={"Authorization": f"Bearer {os.getenv('INFERENCE_API_KEY')}"}
+        )
+        response.raise_for_status()
+        return response.json()["embedding"]
     except Exception as e:
         logger.error(f"Embedding generation error: {e}")
         raise HTTPException(status_code=500, detail="Failed to generate embedding")
