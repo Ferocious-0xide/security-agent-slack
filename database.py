@@ -197,7 +197,7 @@ class DatabaseManager:
             if conn:
                 conn.close()
     
-    def search_knowledge(self, query: str, limit: int = 5) -> List[SecurityKnowledge]:
+    def search_knowledge(self, query: str, limit: int = 10) -> List[SecurityKnowledge]:
         """Search security knowledge using keyword matching (fallback from vector search)."""
         try:
             print(f"\n[SEARCH] Searching knowledge base for: '{query}'")
@@ -249,8 +249,8 @@ class DatabaseManager:
                     
                     for i, term in enumerate(query_terms):
                         if term:
-                            sql_conditions.append(f"title ILIKE %s OR content ILIKE %s")
-                            sql_params.extend([f"%{term}%", f"%{term}%"])
+                            sql_conditions.append(f"(title ILIKE %s OR content ILIKE %s OR category ILIKE %s)")
+                            sql_params.extend([f"%{term}%", f"%{term}%", f"%{term}%"])
                     
                     if sql_conditions:
                         # First check if guidance column exists
@@ -267,20 +267,36 @@ class DatabaseManager:
                                 SELECT id, title, content, category, guidance 
                                 FROM security_knowledge 
                                 WHERE {' OR '.join(sql_conditions)}
+                                ORDER BY 
+                                    CASE 
+                                        WHEN title ILIKE %s THEN 1
+                                        WHEN category ILIKE %s THEN 2
+                                        ELSE 3
+                                    END,
+                                    id DESC
                                 LIMIT %s
                             """
+                            sql_params.extend([f"%{query_terms[0]}%", f"%{query_terms[0]}%"])
                         else:
                             sql = f"""
                                 SELECT id, title, content, category 
                                 FROM security_knowledge 
                                 WHERE {' OR '.join(sql_conditions)}
+                                ORDER BY 
+                                    CASE 
+                                        WHEN title ILIKE %s THEN 1
+                                        WHEN category ILIKE %s THEN 2
+                                        ELSE 3
+                                    END,
+                                    id DESC
                                 LIMIT %s
                             """
+                            sql_params.extend([f"%{query_terms[0]}%", f"%{query_terms[0]}%"])
                         
                         # Ensure limit is always applied
-                        sql_params.append(min(limit, 5))  # Never exceed 5 results
+                        sql_params.append(min(limit, 20))  # Increased from 5 to 20
                         
-                        print(f"[SEARCH] Executing keyword search with limit {min(limit, 5)}...")
+                        print(f"[SEARCH] Executing keyword search with limit {min(limit, 20)}...")
                         cursor.execute(sql, sql_params)
                         keyword_rows = cursor.fetchall()
                         print(f"[SEARCH] Keyword search found {len(keyword_rows)} results")
@@ -341,7 +357,7 @@ class DatabaseManager:
                                                 LIMIT %s
                                             """
                                         
-                                        vector_cursor.execute(sql, (embeddings[0], min(limit, 5)))
+                                        vector_cursor.execute(sql, (embeddings[0], min(limit, 20)))
                                         vector_rows = vector_cursor.fetchall()
                                         
                                         if vector_rows:
@@ -384,8 +400,8 @@ class DatabaseManager:
                         print(f"[SEARCH ERROR] Vector search failed: {str(e)}")
                 
                 # Log details about the final results
-                print(f"\n[SEARCH] === FINAL RESULTS ({len(results[:min(limit, 5)])}) ===")
-                for i, r in enumerate(results[:min(limit, 5)]):
+                print(f"\n[SEARCH] === FINAL RESULTS ({len(results[:min(limit, 20)])}) ===")
+                for i, r in enumerate(results[:min(limit, 20)]):
                     print(f"[SEARCH RESULT {i+1}] {r.title} (Category: {r.category})")
                     # Print a snippet of the content
                     content_snippet = r.content[:100] + "..." if len(r.content) > 100 else r.content
@@ -396,8 +412,8 @@ class DatabaseManager:
                     print("[SEARCH] No results found for your query.")
                 
                 print("\n")
-                # Strictly enforce result limit to maximum of 5
-                return results[:min(limit, 5)]
+                # Strictly enforce result limit to maximum of 20
+                return results[:min(limit, 20)]
             finally:
                 conn.close()
         except Exception as e:
@@ -420,11 +436,11 @@ class DatabaseManager:
                     logger.debug(f"Error checking guidance column: {e}")
                     guidance_exists = False
                 
-                # Use a hard limit of 5 results
+                # Use a hard limit of 20 results
                 if guidance_exists:
-                    cursor.execute("SELECT id, title, content, category, guidance FROM security_knowledge LIMIT %s", (min(limit, 5),))
+                    cursor.execute("SELECT id, title, content, category, guidance FROM security_knowledge LIMIT %s", (min(limit, 20),))
                 else:
-                    cursor.execute("SELECT id, title, content, category FROM security_knowledge LIMIT %s", (min(limit, 5),))
+                    cursor.execute("SELECT id, title, content, category FROM security_knowledge LIMIT %s", (min(limit, 20),))
                 
                 rows = cursor.fetchall()
                 
