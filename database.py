@@ -304,15 +304,22 @@ class DatabaseManager:
             
             # Fallback to text search if vector search fails or returns no results
             cursor.execute("""
-                SELECT id, title, content, category, guidance
+                SELECT id, title, content, category, guidance,
+                       ts_rank(
+                           to_tsvector('english', coalesce(title, '')) || 
+                           to_tsvector('english', coalesce(content, '')) || 
+                           to_tsvector('english', coalesce(category, '')),
+                           plainto_tsquery('english', %s)
+                       ) as rank
                 FROM security_knowledge
                 WHERE 
                     to_tsvector('english', coalesce(title, '')) || 
                     to_tsvector('english', coalesce(content, '')) || 
                     to_tsvector('english', coalesce(category, '')) @@ 
                     plainto_tsquery('english', %s)
+                ORDER BY rank DESC
                 LIMIT %s
-            """, (query, limit))
+            """, (query, query, limit))
             
             rows = cursor.fetchall()
             if not results:  # Only use text search results if vector search returned nothing

@@ -56,85 +56,60 @@ class SecurityAgent:
     
     def _get_claude_analysis(self, title: str, content: str, knowledge_id: int = None) -> str:
         """Get analysis from Claude for the security knowledge and store it in the database."""
-        # Create a cache key based on title and content
-        cache_key = f"{title}:{content[:100]}"
-        
-        # Check if we have a cached response
-        if cache_key in self.analysis_cache:
-            logger.debug(f"Using cached Claude analysis for: {title}")
-            return self.analysis_cache[cache_key]
-            
         try:
-            logger.debug(f"Getting Claude analysis for article: {title}")
+            # Create a unique cache key based on the content
+            cache_key = f"{title}:{content}"
             
-            # Use a prompt that explicitly forbids all formatting
-            prompt = f"""Based on the following security knowledge article, generate a brief investigation guide that a security analyst can follow.
-
-CRITICAL FORMATTING INSTRUCTIONS - DO NOT IGNORE:
-1. Write your response as ONE CONTINUOUS PARAGRAPH with no line breaks except between major sections
-2. DO NOT use bullet points, numbered lists, or any kind of markdown formatting
-3. DO NOT use hash symbols (#), asterisks (*), hyphens (-), or any other special characters for formatting
-4. DO NOT include any headers, section titles, or labels within your text
-5. Write in a natural, conversational tone as if speaking directly to the security analyst
-6. Do not start with "Investigation Guide:" or any other title/header
-7. Your response should be fluid prose like a human would write in an email or document
-
-Knowledge article:
-Title: {title}
-Content: {content}"""
-
-            messages = [{"role": "user", "content": prompt}]
-
-            # Log the request
-            logger.debug("Sending request to Claude")
+            # Always generate new analysis, don't use cache
+            messages = [
+                {
+                    "role": "system",
+                    "content": "You are a security expert providing guidance on security topics. Provide clear, actionable advice based on the given security knowledge."
+                },
+                {
+                    "role": "user",
+                    "content": f"Title: {title}\n\nContent: {content}\n\nPlease provide specific guidance and recommendations based on this security knowledge. Focus on practical steps and best practices."
+                }
+            ]
             
-            try:
-                # Use a timeout to prevent hanging
-                analysis = self.inference_client.chat_completion(messages)
+            # Use a timeout to prevent hanging
+            analysis = self.inference_client.chat_completion(messages)
+            
+            # If we get a response, validate and clean it
+            if analysis and isinstance(analysis, str) and len(analysis) > 20:
+                # Clean up any problematic content
+                analysis = analysis.replace('```', '')
                 
-                # If we get a response, validate and clean it
-                if analysis and isinstance(analysis, str) and len(analysis) > 20:
-                    # Clean up any problematic content
-                    analysis = analysis.replace('```', '')
-                    
-                    # Cache the response
-                    self.analysis_cache[cache_key] = analysis
-                    
-                    # If we have a knowledge_id, store the guidance in the database
-                    if knowledge_id:
-                        try:
-                            # Get the article from the database
-                            knowledge = self.db_manager.get_knowledge_by_id(knowledge_id)
-                            if knowledge:
-                                # Update the guidance field
-                                if not knowledge.guidance:
-                                    # Use raw SQL to update the guidance field
-                                    conn = self.db_manager.engine.raw_connection()
-                                    try:
-                                        cursor = conn.cursor()
-                                        cursor.execute(
-                                            "UPDATE security_knowledge SET guidance = %s WHERE id = %s",
-                                            (analysis, knowledge_id)
-                                        )
-                                        conn.commit()
-                                        logger.info(f"Updated guidance for knowledge article {knowledge_id}")
-                                    finally:
-                                        conn.close()
-                        except Exception as db_error:
-                            logger.error(f"Error updating guidance in database: {str(db_error)}")
-                    
-                    return analysis
-                else:
-                    logger.warning(f"Received invalid analysis response: {analysis}")
-                    return "No guidance available for this security article."
-                    
-            except Exception as inference_error:
-                logger.error(f"Inference API error: {str(inference_error)}")
-                return "No guidance available for this security article."
-
+                # If we have a knowledge_id, store the guidance in the database
+                if knowledge_id:
+                    try:
+                        # Get the article from the database
+                        knowledge = self.db_manager.get_knowledge_by_id(knowledge_id)
+                        if knowledge:
+                            # Update the guidance field
+                            if not knowledge.guidance:
+                                # Use raw SQL to update the guidance field
+                                conn = self.db_manager.engine.raw_connection()
+                                try:
+                                    cursor = conn.cursor()
+                                    cursor.execute(
+                                        "UPDATE security_knowledge SET guidance = %s WHERE id = %s",
+                                        (analysis, knowledge_id)
+                                    )
+                                    conn.commit()
+                                    logger.info(f"Updated guidance for knowledge article {knowledge_id}")
+                                finally:
+                                    conn.close()
+                    except Exception as db_error:
+                        logger.error(f"Error updating guidance in database: {str(db_error)}")
+                
+                return analysis
+            else:
+                return "Analysis Error: Unable to generate guidance"
+                
         except Exception as e:
-            logger.error(f"Error in Claude analysis: {str(e)}")
-            return "No guidance available for this security article."
+            logger.error(f"Error getting Claude analysis: {str(e)}")
+            return "Analysis Error: Unable to generate guidance"
             
     def _cleanup_markdown(self, text: str) -> str:
         """Clean up any markdown formatting that might be in the text."""
