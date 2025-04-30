@@ -327,6 +327,18 @@ class SecurityAgent:
                 }
             })
             
+            # Create article URL (use the one provided or generate a dummy one)
+            reference_url = result.get("reference_url", f"https://security-kb.example.com/{title.lower().replace(' ', '-')}")
+            
+            # Add clickable URL to the knowledge base article
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"<{reference_url}|View full article in Knowledge Base>"
+                }
+            })
+            
             # Add investigation prompt as plain text
             blocks.append({
                 "type": "section",
