@@ -27,6 +27,10 @@ class DatabaseManager:
         if not db_url:
             raise ValueError("DATABASE_URL environment variable not set")
         
+        # Ensure the URL uses the postgresql dialect
+        if not db_url.startswith('postgresql://'):
+            db_url = db_url.replace('postgres://', 'postgresql://', 1)
+        
         self.engine = create_engine(db_url)
         self.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
         
