@@ -981,11 +981,13 @@ class SlackHandler:
                     # If no command text provided, show help
                     if not text or text.lower() == "help":
                         help_text = self._generate_help_message()
+                        logger.info("Sending help message response")
                         respond(text=help_text)
                         return
                     
                     # Send initial response
                     loading_text = f"Processing your request: `{text[:50]}{'...' if len(text) > 50 else ''}`"
+                    logger.info("Sending initial loading response")
                     respond(text=loading_text)
                     
                     # Process the request
@@ -1000,36 +1002,51 @@ class SlackHandler:
                             initial_command=original_command
                         )
                         
+                        logger.info(f"Formatted {len(formatted_blocks)} blocks, preparing to send as separate messages")
+                        
                         # Send each article as a separate message
                         current_blocks = []
+                        article_count = 0
                         for block in formatted_blocks:
                             if block.get("type") == "divider" and current_blocks:
                                 # Send the current article
+                                article_count += 1
+                                logger.info(f"Sending article {article_count} with {len(current_blocks)} blocks")
                                 respond(
                                     blocks=current_blocks,
                                     text="Security Knowledge Article",
                                     response_type="in_channel"
                                 )
+                                logger.info(f"Successfully sent article {article_count}")
                                 current_blocks = []
                             else:
                                 current_blocks.append(block)
                         
                         # Send the last article if there are remaining blocks
                         if current_blocks:
+                            article_count += 1
+                            logger.info(f"Sending final article {article_count} with {len(current_blocks)} blocks")
                             respond(
                                 blocks=current_blocks,
                                 text="Security Knowledge Article",
                                 response_type="in_channel"
                             )
+                            logger.info(f"Successfully sent final article {article_count}")
+                        
+                        logger.info(f"Total articles sent: {article_count}")
+                        
                     elif isinstance(result, dict) and "message" in result:
+                        logger.info(f"Sending simple message response: {result['message'][:50]}...")
                         respond(text=result["message"])
                     else:
+                        logger.info("Sending error response for unprocessable request")
                         respond(text="I couldn't process your request properly.")
                         
                 except Exception as e:
                     error_message = f"I encountered an error processing your request: {str(e)}"
                     logging.error(f"Error processing security command: {e}")
                     logging.error(traceback.format_exc())
+                    logger.info("Sending error response")
                     respond(text=error_message)
             
             # Run in a separate thread to avoid blocking
