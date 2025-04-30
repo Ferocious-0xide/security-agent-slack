@@ -291,47 +291,55 @@ class SecurityAgent:
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f"Found {len(results)} Security Knowledge Articles."
+                "text": f"Found {len(results)} Security Knowledge Articles"
             }
         })
         
-        blocks.append({"type": "divider"})
-        
         # Add each result as a section
         for i, result in enumerate(results):
+            # Add divider between articles
+            if i > 0:
+                blocks.append({"type": "divider"})
+            
             # Extract title, content, and guidance
             title = result.get("title", "Untitled")
             content = result.get("content", "No content available")
             guidance = result.get("guidance", "No guidance available")
             article_id = result.get("id", f"article_{i+1}")
-            url = result.get("reference_url", "")
             
-            # Add article number and title
+            # Add article title
             blocks.append({
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": f"{i+1}. {title}"
+                    "text": title
                 }
             })
             
-            # Add article content
+            # Add article content as plain text
             content_text = content[:1000] + "..." if len(content) > 1000 else content
             content_text = content_text.strip()
             blocks.append({
                 "type": "section",
                 "text": {
-                    "type": "mrkdwn",
+                    "type": "plain_text",
                     "text": content_text
                 }
             })
             
-            # Add investigation prompt
+            # Add investigation prompt as plain text
             blocks.append({
                 "type": "section",
                 "text": {
-                    "type": "mrkdwn",
-                    "text": f"Investigation Prompt:\n{guidance}"
+                    "type": "plain_text",
+                    "text": "Investigation Prompt:"
+                }
+            })
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "plain_text",
+                    "text": guidance
                 }
             })
             
@@ -365,10 +373,6 @@ class SecurityAgent:
                     }
                 ]
             })
-            
-            # Add divider between results
-            if i < len(results) - 1:
-                blocks.append({"type": "divider"})
         
         logger.debug(f"Created {len(blocks)} Slack blocks for search results")
         print(f"[AGENT] Created {len(blocks)} Slack blocks for search results")

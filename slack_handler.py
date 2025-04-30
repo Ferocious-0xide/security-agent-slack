@@ -993,57 +993,19 @@ class SlackHandler:
                     
                     # Send response based on result format
                     if isinstance(result, dict) and "original_results" in result:
-                        # Check if we should use block formatting with buttons
-                        if result.get("use_blocks", False):
-                            # Format results using blocks to include the Ask Charlotte button
-                            # Pass the response_url and original command to be included in button metadata
-                            formatted_blocks = self.security_agent._format_slack_blocks(
-                                result["original_results"], 
-                                response_url=response_url,
-                                initial_command=original_command
-                            )
-                            
-                            # Send blocks using the respond function, not direct API call
-                            respond(
-                                blocks=formatted_blocks,
-                                text=f"Found {len(result['original_results'])} relevant security knowledge articles"
-                            )
-                        else:
-                            # Use the existing text-based formatting
-                            for i, result_item in enumerate(result["original_results"]):
-                                # Get title and content
-                                title = result_item.get("title", "Untitled")
-                                content = result_item.get("content", "")
-                                guidance = result_item.get("guidance", "")
-                                
-                                # Clean up any remaining formatting that Claude might have included
-                                # Remove any lines that look like headers (start with # or have : at the end)
-                                guidance_lines = guidance.split('\n')
-                                cleaned_lines = []
-                                for line in guidance_lines:
-                                    line = line.strip()
-                                    # Skip empty lines
-                                    if not line:
-                                        continue
-                                    # Skip lines that look like headers
-                                    if line.startswith('#') or line.startswith('*') or line.endswith(':'):
-                                        continue
-                                    # Add the line to our cleaned list
-                                    cleaned_lines.append(line)
-                                
-                                # Join lines back into a single paragraph
-                                guidance = ' '.join(cleaned_lines)
-                                
-                                # Create a Slack-friendly formatted message
-                                # Title is bold, content is regular text
-                                message = f"*{i+1}. {title}*\n{content}"
-                                
-                                # Add guidance if it exists as a natural paragraph
-                                if guidance:
-                                    message += f"\n\nInvestigation Prompt:\n{guidance}"
-                                
-                                # Send the combined message
-                                respond(text=message)
+                        # Format results using blocks to include the Ask Charlotte button
+                        formatted_blocks = self.security_agent._format_slack_blocks(
+                            result["original_results"], 
+                            response_url=response_url,
+                            initial_command=original_command
+                        )
+                        
+                        # Send blocks using the respond function
+                        respond(
+                            blocks=formatted_blocks,
+                            text=f"Found {len(result['original_results'])} relevant security knowledge articles",
+                            response_type="in_channel"
+                        )
                     elif isinstance(result, dict) and "message" in result:
                         respond(text=result["message"])
                     else:
