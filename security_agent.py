@@ -278,7 +278,7 @@ class SecurityAgent:
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f"*Found {len(results)} Security Knowledge Articles*\nReview articles and investigation prompts below."
+                "text": f"Found {len(results)} Security Knowledge Articles. Review articles and investigation prompts below."
             }
         })
         
@@ -288,7 +288,7 @@ class SecurityAgent:
             "elements": [
                 {
                     "type": "mrkdwn",
-                    "text": "ℹ️ _To use the Ask Charlotte buttons, make sure the bot is in this channel. If necessary, invite it with `/invite @security_agent`._"
+                    "text": "To use the Ask Charlotte buttons, make sure the bot is in this channel. If necessary, invite it with /invite @security_agent."
                 }
             ]
         })
@@ -320,7 +320,7 @@ class SecurityAgent:
             
             # Append URL if available
             if url:
-                content_text += f"\n\n<{url}|View reference documentation>"
+                content_text += f"\n\nView reference documentation: {url}"
                 
             blocks.append({
                 "type": "section",
@@ -336,7 +336,7 @@ class SecurityAgent:
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": f"*Investigation Prompt:*\n\n{guidance_text}"
+                    "text": f"Investigation Prompt:\n\n{guidance_text}"
                 }
             })
             
