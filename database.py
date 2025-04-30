@@ -40,6 +40,49 @@ class DatabaseManager:
     def init_db(self):
         """Initialize the database by creating all tables."""
         Base.metadata.create_all(bind=self.engine)
+        
+        # Ensure all required columns exist in security_knowledge table
+        conn = self.engine.raw_connection()
+        try:
+            cursor = conn.cursor()
+            
+            # Check if title column exists
+            cursor.execute("""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name='security_knowledge' 
+                AND column_name='title'
+            """)
+            if not cursor.fetchone():
+                cursor.execute("ALTER TABLE security_knowledge ADD COLUMN title VARCHAR(255) NOT NULL DEFAULT ''")
+            
+            # Check if category column exists
+            cursor.execute("""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name='security_knowledge' 
+                AND column_name='category'
+            """)
+            if not cursor.fetchone():
+                cursor.execute("ALTER TABLE security_knowledge ADD COLUMN category VARCHAR(100) NOT NULL DEFAULT ''")
+            
+            # Check if guidance column exists
+            cursor.execute("""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name='security_knowledge' 
+                AND column_name='guidance'
+            """)
+            if not cursor.fetchone():
+                cursor.execute("ALTER TABLE security_knowledge ADD COLUMN guidance TEXT")
+            
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Error updating security_knowledge table: {str(e)}")
+            raise
+        finally:
+            conn.close()
     
     def get_db(self) -> Session:
         """Get a database session."""
