@@ -128,6 +128,18 @@ class SecurityAgent:
         # Remove other bullet formats
         text = re.sub(r'^\s*-\s+', '', text, flags=re.MULTILINE)
         
+        # Remove any remaining markdown formatting
+        text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)  # Bold
+        text = re.sub(r'\*(.*?)\*', r'\1', text)      # Italic
+        text = re.sub(r'`(.*?)`', r'\1', text)        # Code
+        text = re.sub(r'\[(.*?)\]\((.*?)\)', r'\1', text)  # Links
+        
+        # Ensure proper paragraph spacing
+        text = re.sub(r'\n\s*\n\s*\n+', '\n\n', text)
+        
+        # Remove any leading/trailing whitespace
+        text = text.strip()
+        
         return text
 
     def process_command(self, command_text: str) -> Dict[str, Any]:
