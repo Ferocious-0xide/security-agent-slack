@@ -291,24 +291,13 @@ class SecurityAgent:
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f"Found {len(results)} Security Knowledge Articles. Review articles and investigation prompts below."
+                "text": f"Found {len(results)} Security Knowledge Articles."
             }
-        })
-        
-        # Add note about inviting the bot if using Ask Charlotte buttons
-        blocks.append({
-            "type": "context",
-            "elements": [
-                {
-                    "type": "mrkdwn",
-                    "text": "To use the Ask Charlotte buttons, make sure the bot is in this channel. If necessary, invite it with /invite @security_agent."
-                }
-            ]
         })
         
         blocks.append({"type": "divider"})
         
-        # Add each result as an expandable section
+        # Add each result as a section
         for i, result in enumerate(results):
             # Extract title, content, and guidance
             title = result.get("title", "Untitled")
@@ -317,24 +306,18 @@ class SecurityAgent:
             article_id = result.get("id", f"article_{i+1}")
             url = result.get("reference_url", "")
             
-            # Add article header
+            # Add article number and title
             blocks.append({
-                "type": "header",
+                "type": "section",
                 "text": {
-                    "type": "plain_text",
-                    "text": f"{i+1}. {title}",
-                    "emoji": True
+                    "type": "mrkdwn",
+                    "text": f"{i+1}. {title}"
                 }
             })
             
-            # Add article content with proper spacing
+            # Add article content
             content_text = content[:1000] + "..." if len(content) > 1000 else content
             content_text = content_text.strip()
-            
-            # Append URL if available
-            if url:
-                content_text += f"\n\nView reference documentation: {url}"
-                
             blocks.append({
                 "type": "section",
                 "text": {
@@ -343,18 +326,16 @@ class SecurityAgent:
                 }
             })
             
-            # Add investigation prompt header and content with proper spacing
-            guidance_text = guidance.strip()
+            # Add investigation prompt
             blocks.append({
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": f"Investigation Prompt:\n\n{guidance_text}"
+                    "text": f"Investigation Prompt:\n{guidance}"
                 }
             })
             
             # Create interactive button with Ask Charlotte functionality
-            # Ensure that guidance is not too long for inclusion in button value
             max_guidance_length = 500  # Slack has limit on button values
             truncated_guidance = guidance[:max_guidance_length] if guidance else ""
             
