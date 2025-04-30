@@ -273,7 +273,7 @@ class SecurityAgent:
         if initial_command:
             logger.info(f"Including initial command: {initial_command}")
         
-        # First block explains the results (this will be displayed as intro message by SlackHandler)
+        # First block explains the results
         blocks.append({
             "type": "section",
             "text": {
@@ -302,7 +302,7 @@ class SecurityAgent:
             content = result.get("content", "No content available")
             guidance = result.get("guidance", "No guidance available")
             article_id = result.get("id", f"article_{i+1}")
-            url = result.get("url")
+            url = result.get("reference_url", "")
             
             # Add article header
             blocks.append({
