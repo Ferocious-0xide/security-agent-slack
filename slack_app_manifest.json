@@ -28,7 +28,12 @@
         "channels:history",
         "groups:history",
         "im:history",
-        "mpim:history"
+        "mpim:history",
+        "channels:join",
+        "channels:read",
+        "groups:read",
+        "im:write",
+        "users:read"
       ]
     }
   },
