@@ -314,8 +314,9 @@ class SecurityAgent:
                 }
             })
             
-            # Add article content
+            # Add article content with proper spacing
             content_text = content[:1000] + "..." if len(content) > 1000 else content
+            content_text = content_text.strip()
             
             # Append URL if available
             if url:
@@ -329,12 +330,13 @@ class SecurityAgent:
                 }
             })
             
-            # Add investigation prompt header and content
+            # Add investigation prompt header and content with proper spacing
+            guidance_text = guidance.strip()
             blocks.append({
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": "*Investigation Prompt:*\n" + guidance
+                    "text": f"*Investigation Prompt:*\n\n{guidance_text}"
                 }
             })
             
