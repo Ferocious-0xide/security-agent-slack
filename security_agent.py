@@ -64,11 +64,11 @@ class SecurityAgent:
             messages = [
                 {
                     "role": "system",
-                    "content": "You are a security expert providing guidance on security topics. Provide clear, actionable advice based on the given security knowledge."
+                    "content": "You are a security expert providing guidance on security topics. Provide clear, actionable advice based on the given security knowledge. Format your response as complete sentences in paragraphs. Do not use bullet points, numbered lists, or markdown formatting."
                 },
                 {
                     "role": "user",
-                    "content": f"Title: {title}\n\nContent: {content}\n\nPlease provide specific guidance and recommendations based on this security knowledge. Focus on practical steps and best practices."
+                    "content": f"Title: {title}\n\nContent: {content}\n\nPlease provide specific guidance and recommendations based on this security knowledge. Focus on practical steps and best practices. Format your response as complete sentences in paragraphs without any bullet points, lists, or special formatting."
                 }
             ]
             
@@ -79,6 +79,7 @@ class SecurityAgent:
             if analysis and isinstance(analysis, str) and len(analysis) > 20:
                 # Clean up any problematic content
                 analysis = analysis.replace('```', '')
+                analysis = self._cleanup_markdown(analysis)
                 
                 # If we have a knowledge_id, store the guidance in the database
                 if knowledge_id:
