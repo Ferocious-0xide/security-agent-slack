@@ -34,6 +34,9 @@ class DatabaseManager:
         self.engine = create_engine(db_url)
         self.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
         
+        # Initialize the database tables
+        self.init_db()
+        
     def init_db(self):
         """Initialize the database by creating all tables."""
         Base.metadata.create_all(bind=self.engine)
