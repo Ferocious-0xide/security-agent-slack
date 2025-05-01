@@ -1004,34 +1004,44 @@ class SlackHandler:
                         
                         logger.info(f"Formatted {len(formatted_blocks)} blocks, preparing to send as separate messages")
                         
-                        # Send each article as a separate message
-                        current_blocks = []
+                        # Send the header block separately first
+                        header_block = [formatted_blocks[0]]
+                        respond(
+                            blocks=header_block,
+                            text="Security Knowledge Articles Found",
+                            response_type="in_channel"
+                        )
+
+                        # Process each article
+                        current_article_blocks = []
                         article_count = 0
-                        for block in formatted_blocks:
-                            if block.get("type") == "divider" and current_blocks:
-                                # Send the current article
+                        
+                        # Start after the header (index 1)
+                        i = 1
+                        while i < len(formatted_blocks):
+                            # Start a new article
+                            current_article_blocks = []
+                            
+                            # Collect blocks until we hit a divider or the end
+                            while i < len(formatted_blocks) and formatted_blocks[i].get("type") != "divider":
+                                current_article_blocks.append(formatted_blocks[i])
+                                i += 1
+                            
+                            # Skip the divider
+                            if i < len(formatted_blocks) and formatted_blocks[i].get("type") == "divider":
+                                i += 1
+                            
+                            # If we collected blocks for this article, send it
+                            if current_article_blocks:
                                 article_count += 1
-                                logger.info(f"Sending article {article_count} with {len(current_blocks)} blocks")
+                                logger.info(f"Sending article {article_count} with {len(current_article_blocks)} blocks")
+                                
                                 respond(
-                                    blocks=current_blocks,
-                                    text="Security Knowledge Article",
+                                    blocks=current_article_blocks,
+                                    text=f"Security Knowledge Article {article_count}",
                                     response_type="in_channel"
                                 )
                                 logger.info(f"Successfully sent article {article_count}")
-                                current_blocks = []
-                            else:
-                                current_blocks.append(block)
-                        
-                        # Send the last article if there are remaining blocks
-                        if current_blocks:
-                            article_count += 1
-                            logger.info(f"Sending final article {article_count} with {len(current_blocks)} blocks")
-                            respond(
-                                blocks=current_blocks,
-                                text="Security Knowledge Article",
-                                response_type="in_channel"
-                            )
-                            logger.info(f"Successfully sent final article {article_count}")
                         
                         logger.info(f"Total articles sent: {article_count}")
                         

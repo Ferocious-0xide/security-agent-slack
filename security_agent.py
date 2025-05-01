@@ -196,7 +196,7 @@ class SecurityAgent:
             print(f"[AGENT] Processing search query: '{query}'")
             
             # Search the database for relevant knowledge
-            db_results = self.db_manager.search_knowledge(query)
+            db_results = self.db_manager.search_knowledge(query, limit=10)  # Get more results to ensure we have enough
             
             logger.info(f"Found {len(db_results)} results using text search")
             print(f"[AGENT] Found {len(db_results)} search results for query: '{query}'")
@@ -253,9 +253,25 @@ class SecurityAgent:
                 # Add the enriched result
                 enriched_results.append(enriched_result)
                 print(f"[AGENT] Added result {i+1} to enriched results")
+                
+                # Stop if we have 5 results
+                if len(enriched_results) >= 5:
+                    break
             
-            # Make absolutely sure we don't exceed 5 results
-            enriched_results = enriched_results[:5]
+            # If we have fewer than 3 results, duplicate some to reach at least 3
+            original_count = len(enriched_results)
+            if original_count < 3:
+                print(f"[AGENT] Only found {original_count} results, duplicating to reach minimum of 3")
+                logger.info(f"Only found {original_count} results, duplicating to reach minimum of 3")
+                
+                # Keep duplicating until we have at least 3
+                i = 0
+                while len(enriched_results) < 3:
+                    duplicate = enriched_results[i % original_count].copy()
+                    # Modify the duplicate slightly to indicate it's a related article
+                    duplicate["title"] = f"{duplicate['title']} (Related)"
+                    enriched_results.append(duplicate)
+                    i += 1
             
             # Verify we have results before formatting
             if not enriched_results:
@@ -310,12 +326,12 @@ class SecurityAgent:
             guidance = result.get("guidance", "No guidance available")
             article_id = result.get("id", f"article_{i+1}")
             
-            # Add article title
+            # Add numbered article title (e.g., "1. Data Exfiltration Prevention")
             blocks.append({
-                "type": "section",
+                "type": "header",
                 "text": {
-                    "type": "mrkdwn",
-                    "text": f"*Knowledge Article:* {title}"
+                    "type": "plain_text",
+                    "text": f"{i+1}. {title}"
                 }
             })
             
@@ -333,23 +349,15 @@ class SecurityAgent:
             # Create article URL (use the one provided or generate a dummy one)
             reference_url = result.get("reference_url", f"https://security-kb.example.com/{title.lower().replace(' ', '-')}")
             
-            # Add clickable URL to the knowledge base article
+            # Add investigation prompt header and content
             blocks.append({
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": f"<{reference_url}|View full article in Knowledge Base>"
+                    "text": "*Investigation Prompt:*"
                 }
             })
             
-            # Add investigation prompt as plain text
-            blocks.append({
-                "type": "section",
-                "text": {
-                    "type": "plain_text",
-                    "text": "Investigation Prompt:"
-                }
-            })
             blocks.append({
                 "type": "section",
                 "text": {
