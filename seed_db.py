@@ -47,7 +47,7 @@ def seed_database():
         # Check the vector dimensions in the table definition
         cur.execute("SELECT data_type FROM information_schema.columns WHERE table_name='security_knowledge' AND column_name='embedding'")
         result = cur.fetchone()
-        vector_dimensions = 1536  # Default expected from Cohere embeddings
+        vector_dimensions = 1024  # Default expected from Cohere embeddings
         if result:
             try:
                 # Extract dimensions from type definition like 'vector(1024)'
@@ -61,7 +61,7 @@ def seed_database():
                 logger.warning(f"Using default dimensions: {vector_dimensions}")
         
         # If dimensions mismatch, alter the table
-        if vector_enabled and vector_dimensions != 1536:
+        if vector_enabled and vector_dimensions != 1024:
             try:
                 # First drop the existing index if it exists
                 conn.autocommit = True
@@ -69,8 +69,8 @@ def seed_database():
                 
                 # Drop the embedding column and recreate it with correct dimensions
                 cur.execute("ALTER TABLE security_knowledge DROP COLUMN IF EXISTS embedding")
-                cur.execute("ALTER TABLE security_knowledge ADD COLUMN embedding vector(1536)")
-                logger.info("Updated embedding column to vector(1536)")
+                cur.execute("ALTER TABLE security_knowledge ADD COLUMN embedding vector(1024)")
+                logger.info("Updated embedding column to vector(1024)")
                 
                 # Create index after fixing the column
                 cur.execute("""
@@ -245,20 +245,20 @@ def reset_and_seed_all():
             # Ensure vector extension is enabled
             cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
             
-            # Create the table with correct dimensions
+            # Create the table with 1024 dimensions which is what Cohere is providing
             cur.execute("""
                 CREATE TABLE security_knowledge (
                     id SERIAL PRIMARY KEY,
                     title TEXT NOT NULL,
                     content TEXT NOT NULL,
                     category TEXT NOT NULL,
-                    embedding vector(1536),
+                    embedding vector(1024),
                     guidance TEXT,
                     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            logger.info("Created security_knowledge table with vector(1536)")
+            logger.info("Created security_knowledge table with vector(1024)")
             
             # Create references table
             cur.execute("""
