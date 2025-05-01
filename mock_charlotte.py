@@ -15,6 +15,8 @@ from pgvector.psycopg2 import register_vector
 import traceback
 from dotenv import load_dotenv
 import urllib3
+import random
+from fastapi.responses import JSONResponse
 
 # Disable SSL warnings
 urllib3.disable_warnings()
@@ -164,6 +166,66 @@ def format_slack_response(response: Response) -> Dict[str, Any]:
         })
 
     return {"blocks": blocks}
+
+def generate_random_alert():
+    """Generate a random security alert suggesting use of the security search command."""
+    
+    alert_templates = [
+        "Potential data exfiltration activity detected. Use `/security search data exfiltration` for best practices and guidance.",
+        "Unusual network traffic patterns observed. Consider running `/security search network segmentation` for security recommendations.",
+        "Multiple failed login attempts detected. Please check `/security search access control` for security guidance.",
+        "Suspicious email activity detected. Run `/security search email security` for best practices.",
+        "Unusual cloud resource access detected. Use `/security search cloud security` for recommendations.",
+        "Potential malware activity detected. Check `/security search endpoint detection` for response guidance.",
+        "Configuration drift detected in critical systems. Run `/security search secure configuration` for best practices.",
+        "Suspicious privileged account activity observed. Use `/security search privileged access` for security guidance."
+    ]
+    
+    return random.choice(alert_templates)
+
+def send_slack_alert(webhook_url, channel, message, alert_type="info"):
+    """Send an alert message to Slack via webhook."""
+    
+    # Set color based on alert type
+    color = "#2EB67D"  # Green for info
+    if alert_type == "warning":
+        color = "#ECB22E"  # Yellow for warning
+    elif alert_type == "critical":
+        color = "#E01E5A"  # Red for critical
+
+    # Create Slack message payload
+    payload = {
+        "channel": channel,
+        "username": "Security Alert Bot",
+        "icon_emoji": ":rotating_light:",
+        "attachments": [
+            {
+                "color": color,
+                "pretext": ":rotating_light: *SECURITY ALERT*",
+                "title": "Potential Security Concern Detected",
+                "text": message,
+                "footer": f"Alert Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                "footer_icon": "https://platform.slack-edge.com/img/default_application_icon.png"
+            }
+        ]
+    }
+
+    try:
+        response = requests.post(
+            webhook_url,
+            data=json.dumps(payload),
+            headers={"Content-Type": "application/json"}
+        )
+        
+        if response.status_code == 200:
+            logger.info(f"Alert sent successfully to {channel}")
+            return True
+        else:
+            logger.error(f"Failed to send alert: {response.status_code} - {response.text}")
+            return False
+    except Exception as e:
+        logger.error(f"Error sending alert: {str(e)}")
+        return False
 
 # API endpoints
 @app.post("/v1/chat/completions", response_model=Response)
@@ -387,6 +449,46 @@ async def get_status():
     except Exception as e:
         logger.error(f"Status check error: {e}")
         raise HTTPException(status_code=500, detail="Failed to check system status")
+
+@app.get("/trigger-alert")
+async def trigger_alert(channel: Optional[str] = None, alert_type: Optional[str] = None):
+    """Trigger a mock security alert in Slack."""
+    try:
+        webhook_url = os.getenv("SLACK_WEBHOOK_URL")
+        if not webhook_url:
+            return JSONResponse(
+                status_code=500,
+                content={"status": "error", "message": "SLACK_WEBHOOK_URL is not set"}
+            )
+        
+        # Use provided channel or default
+        target_channel = channel or os.getenv("SLACK_ALERT_CHANNEL", "#security-alerts")
+        
+        # Use provided alert type or random
+        alert_severity = alert_type or "info"
+        if alert_severity not in ["info", "warning", "critical"]:
+            alert_severity = "info"
+            
+        # Generate alert message
+        alert_message = generate_random_alert()
+        
+        # Send the alert
+        success = send_slack_alert(webhook_url, target_channel, alert_message, alert_severity)
+        
+        if success:
+            return {"status": "success", "message": "Alert triggered successfully", "channel": target_channel}
+        else:
+            return JSONResponse(
+                status_code=500,
+                content={"status": "error", "message": "Failed to send alert"}
+            )
+    except Exception as e:
+        logger.error(f"Error triggering alert: {str(e)}")
+        logger.error(traceback.format_exc())
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "message": f"Error: {str(e)}"}
+        )
 
 @app.get("/health")
 async def health_check():
