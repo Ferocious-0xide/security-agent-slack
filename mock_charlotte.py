@@ -516,6 +516,113 @@ async def health_check():
             "error": str(e)
         }
 
+@app.post("/slack/commands")
+async def handle_slack_commands(request: Request):
+    """Handle Slack slash commands."""
+    try:
+        form_data = await request.form()
+        command = form_data.get("command", "")
+        text = form_data.get("text", "")
+        
+        logger.info(f"Received slash command: {command} with text: {text}")
+        
+        if command == "/security":
+            # Basic response for search command
+            if text.startswith("search"):
+                search_term = text.replace("search", "").strip()
+                
+                # Create search query
+                query = Query(query=search_term)
+                
+                # Get query embedding
+                query_embedding = get_embedding(query.query)
+                
+                # Search for relevant documents
+                with get_db_connection() as conn:
+                    with conn.cursor() as cur:
+                        # Cast the embedding to vector type
+                        cur.execute("""
+                            SELECT title, content, 
+                                1 - (embedding <=> %s::vector) as similarity
+                            FROM documents
+                            WHERE embedding IS NOT NULL
+                            ORDER BY similarity DESC
+                            LIMIT 5
+                        """, (query_embedding,))
+                        results = cur.fetchall()
+                
+                if not results:
+                    return {
+                        "response_type": "ephemeral",
+                        "text": "No relevant security articles found. Please try a different search term."
+                    }
+                
+                # Format search results for Slack
+                blocks = [
+                    {
+                        "type": "header",
+                        "text": {
+                            "type": "plain_text",
+                            "text": f"Security Knowledge Search Results: {search_term}"
+                        }
+                    }
+                ]
+                
+                for idx, result in enumerate(results):
+                    similarity_percentage = round(result["similarity"] * 100)
+                    relevance_emoji = "🟢" if similarity_percentage > 75 else "🟡" if similarity_percentage > 50 else "🔴"
+                    
+                    # Add article block
+                    blocks.append(
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": f"*{result['title']}*\n{result['content'][:200]}..."
+                            }
+                        }
+                    )
+                    
+                    # Add relevance indicator
+                    blocks.append(
+                        {
+                            "type": "context",
+                            "elements": [
+                                {
+                                    "type": "mrkdwn",
+                                    "text": f"{relevance_emoji} Relevance: {similarity_percentage}%"
+                                }
+                            ]
+                        }
+                    )
+                    
+                    # Add divider except for the last result
+                    if idx < len(results) - 1:
+                        blocks.append({"type": "divider"})
+                
+                return {
+                    "response_type": "in_channel",
+                    "blocks": blocks
+                }
+            else:
+                # Help message
+                return {
+                    "response_type": "ephemeral",
+                    "text": "Available commands:\n• `/security search [query]` - Search security knowledge base"
+                }
+        
+        return {
+            "response_type": "ephemeral",
+            "text": "Unknown command. Please try again."
+        }
+    except Exception as e:
+        logger.error(f"Error processing slash command: {str(e)}")
+        logger.error(traceback.format_exc())
+        return {
+            "response_type": "ephemeral",
+            "text": "Sorry, there was an error processing your command."
+        }
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
