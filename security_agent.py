@@ -224,8 +224,8 @@ class SecurityAgent:
                     reference_url = url_match.group(0)
                     print(f"[AGENT] Found reference URL in content: {reference_url}")
                 else:
-                    # Create reference URL (in a real system, this would be a real URL)
-                    reference_url = f"https://security-kb.example.com/{result.title.lower().replace(' ', '-')}"
+                    # Create a dummy URL with the requested format
+                    reference_url = f"https://kb-article-{result.id}.example.com"
                     print(f"[AGENT] Generated reference URL: {reference_url}")
                 
                 # Create an enriched result with guidance
@@ -347,7 +347,16 @@ class SecurityAgent:
             })
             
             # Create article URL (use the one provided or generate a dummy one)
-            reference_url = result.get("reference_url", f"https://security-kb.example.com/{title.lower().replace(' ', '-')}")
+            reference_url = result.get("reference_url", f"https://kb-article-{i+1}.example.com")
+            
+            # Add clickable URL to the knowledge base article
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"<{reference_url}|View full article in Knowledge Base>"
+                }
+            })
             
             # Add investigation prompt header and content
             blocks.append({
