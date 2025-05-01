@@ -1,8 +1,14 @@
-# Security Agent Integration Platform
+# 🛡️ Security Agent Integration Platform
+
+[![Heroku App Status](https://img.shields.io/badge/heroku-deployed-brightgreen?logo=heroku)](https://heroku.com)
+[![Slack App](https://img.shields.io/badge/slack-app-4A154B?logo=slack)](https://slack.com)
+[![Salesforce Integration](https://img.shields.io/badge/salesforce-connected-00A1E0?logo=salesforce)](https://salesforce.com)
 
 A comprehensive security operations platform that integrates Slack, Salesforce, and Charlotte AI to provide intelligent security incident response and automation.
 
-## System Architecture
+> ⚠️ **DISCLAIMER**: This project is a proof of concept and not ready for production use. It's provided as a starting point for those looking to build similar integration platforms.
+
+## 🏗️ System Architecture
 
 ```mermaid
 graph TD
@@ -40,14 +46,14 @@ graph TD
     SA -->|Response| SB
 ```
 
-## Components
+## 🧩 Components
 
-### 1. Slack Integration
+### 1. 💬 Slack Integration
 - **Slack Bot**: Handles user interactions and commands
 - **Slack Commands**: Custom slash commands for security operations
 - **Slack Events**: Real-time event processing for security alerts
 
-### 2. Heroku Services
+### 2. ☁️ Heroku Services
 - **Security Agent**: Core application handling:
   - Command processing
   - Event handling
@@ -62,12 +68,12 @@ graph TD
   - Context-aware responses
   - Incident analysis
 
-### 3. Salesforce Integration
+### 3. ⚡ Salesforce Integration
 - **Security Operations**: Incident management and tracking
 - **Workflow Engine**: Automated response workflows
 - **Automation Agent**: Task automation and execution
 
-## Data Flow
+## 🔄 Data Flow
 
 1. **User Interaction**:
    - User sends command or alert in Slack
@@ -91,7 +97,7 @@ graph TD
      - Automation results
    - Response is sent back to Slack
 
-## Environment Setup
+## ⚙️ Environment Setup
 
 ### Prerequisites
 - Python 3.11+
@@ -143,7 +149,7 @@ graph TD
    );
    ```
 
-## Salesforce Integration Setup
+## 🔌 Salesforce Integration Setup
 
 The Security Agent platform integrates with Salesforce to create security cases based on Slack interactions:
 
@@ -174,7 +180,7 @@ The Security Agent platform integrates with Salesforce to create security cases 
    - Click on the "Create Security Case" button to trigger the Salesforce flow
    - Verify that the case is created in Salesforce with the correct information
 
-## Development Workflow
+## 👨‍💻 Development Workflow
 
 1. **Local Development**:
    ```bash
@@ -207,7 +213,7 @@ The Security Agent platform integrates with Salesforce to create security cases 
    heroku config:set KEY=VALUE
    ```
 
-## Security Considerations
+## 🔒 Security Considerations
 
 1. **API Key Management**:
    - Never commit API keys to version control
@@ -224,7 +230,7 @@ The Security Agent platform integrates with Salesforce to create security cases 
    - Monitor for suspicious activity
    - Set up alerts for unusual patterns
 
-## Future Enhancements
+## 🚀 Future Enhancements
 
 1. **Advanced Features**:
    - Machine learning for incident classification
@@ -241,10 +247,10 @@ The Security Agent platform integrates with Salesforce to create security cases 
    - Performance metrics
    - Health checks
 
-## Support
+## 📞 Support
 
 For issues and feature requests, please create a GitHub issue in this repository.
 
-## License
+## 📄 License
 
 This project is licensed under the MIT License - see the LICENSE file for details. 

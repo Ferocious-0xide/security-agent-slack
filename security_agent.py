@@ -195,11 +195,34 @@ class SecurityAgent:
         try:
             print(f"[AGENT] Processing search query: '{query}'")
             
-            # Search the database for relevant knowledge
-            db_results = self.db_manager.search_knowledge(query, limit=10)  # Get more results to ensure we have enough
+            # First, get results specifically matching the query
+            specific_results = self.db_manager.search_knowledge(query, limit=3)
             
-            logger.info(f"Found {len(db_results)} results using text search")
-            print(f"[AGENT] Found {len(db_results)} search results for query: '{query}'")
+            logger.info(f"Found {len(specific_results)} specific results using text search")
+            print(f"[AGENT] Found {len(specific_results)} specific search results for query: '{query}'")
+            
+            # If we don't have enough specific results, get some general/popular articles to fill in
+            if len(specific_results) < 3:
+                # Get some other articles with different topics to ensure diversity
+                additional_query = "security best practices"  # A general query to get diverse results
+                generic_results = self.db_manager.search_knowledge(additional_query, limit=5)
+                
+                # Filter out any duplicates we already have from the specific search
+                filtered_generic_results = []
+                specific_titles = [result.title for result in specific_results]
+                
+                for result in generic_results:
+                    if result.title not in specific_titles:
+                        filtered_generic_results.append(result)
+                        
+                # Combine results, ensuring we have at least 3 but no more than 5
+                db_results = specific_results + filtered_generic_results
+                db_results = db_results[:5]  # Cap at 5 results
+                
+                logger.info(f"Added {len(filtered_generic_results)} generic results for a total of {len(db_results)}")
+                print(f"[AGENT] Added generic results for a total of {len(db_results)} search results")
+            else:
+                db_results = specific_results[:5]  # Cap at 5 results
             
             if not db_results:
                 logger.debug("No search results found")
@@ -257,21 +280,6 @@ class SecurityAgent:
                 # Stop if we have 5 results
                 if len(enriched_results) >= 5:
                     break
-            
-            # If we have fewer than 3 results, duplicate some to reach at least 3
-            original_count = len(enriched_results)
-            if original_count < 3:
-                print(f"[AGENT] Only found {original_count} results, duplicating to reach minimum of 3")
-                logger.info(f"Only found {original_count} results, duplicating to reach minimum of 3")
-                
-                # Keep duplicating until we have at least 3
-                i = 0
-                while len(enriched_results) < 3:
-                    duplicate = enriched_results[i % original_count].copy()
-                    # Modify the duplicate slightly to indicate it's a related article
-                    duplicate["title"] = f"{duplicate['title']} (Related)"
-                    enriched_results.append(duplicate)
-                    i += 1
             
             # Verify we have results before formatting
             if not enriched_results:
