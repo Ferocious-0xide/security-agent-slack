@@ -44,6 +44,45 @@ def seed_database():
             finally:
                 conn.autocommit = False
         
+        # Check the vector dimensions in the table definition
+        cur.execute("SELECT data_type FROM information_schema.columns WHERE table_name='security_knowledge' AND column_name='embedding'")
+        result = cur.fetchone()
+        vector_dimensions = 1536  # Default expected from Cohere embeddings
+        if result:
+            try:
+                # Extract dimensions from type definition like 'vector(1024)'
+                data_type = result[0]
+                if 'vector(' in data_type:
+                    dimensions_str = data_type.split('vector(')[1].split(')')[0]
+                    vector_dimensions = int(dimensions_str)
+                    logger.info(f"Detected vector dimensions in table: {vector_dimensions}")
+            except Exception as e:
+                logger.warning(f"Could not determine vector dimensions: {e}")
+                logger.warning(f"Using default dimensions: {vector_dimensions}")
+        
+        # If dimensions mismatch, alter the table
+        if vector_enabled and vector_dimensions != 1536:
+            try:
+                # First drop the existing index if it exists
+                conn.autocommit = True
+                cur.execute("DROP INDEX IF EXISTS security_knowledge_embedding_idx")
+                
+                # Drop the embedding column and recreate it with correct dimensions
+                cur.execute("ALTER TABLE security_knowledge DROP COLUMN IF EXISTS embedding")
+                cur.execute("ALTER TABLE security_knowledge ADD COLUMN embedding vector(1536)")
+                logger.info("Updated embedding column to vector(1536)")
+                
+                # Create index after fixing the column
+                cur.execute("""
+                    CREATE INDEX security_knowledge_embedding_idx 
+                    ON security_knowledge USING ivfflat (embedding vector_cosine_ops)
+                """)
+                logger.info("Created vector index for similarity search")
+            except Exception as e:
+                logger.error(f"Error updating embedding column dimensions: {e}")
+            finally:
+                conn.autocommit = False
+        
         # Get existing articles to avoid duplicates
         cur.execute("SELECT title FROM security_knowledge")
         existing_titles = {row[0] for row in cur.fetchall()}
@@ -72,7 +111,7 @@ def seed_database():
                         )
                         if embeddings and len(embeddings) > 0:
                             embedding = embeddings[0]
-                            logger.info(f"Generated embedding for {title}")
+                            logger.info(f"Generated embedding for {title} with {len(embedding)} dimensions")
                     except Exception as e:
                         logger.warning(f"Could not generate embedding for {title}: {e}")
                 
@@ -95,28 +134,6 @@ def seed_database():
             except Exception as e:
                 conn.rollback()
                 logger.error(f"Error inserting article '{title}': {e}")
-        
-        # Create index on embedding vector if needed
-        if vector_enabled:
-            try:
-                conn.autocommit = True
-                # First check if index exists
-                cur.execute("""
-                    SELECT 1 FROM pg_indexes 
-                    WHERE indexname = 'security_knowledge_embedding_idx'
-                """)
-                index_exists = cur.fetchone() is not None
-                
-                if not index_exists:
-                    cur.execute("""
-                        CREATE INDEX security_knowledge_embedding_idx 
-                        ON security_knowledge USING ivfflat (embedding vector_cosine_ops);
-                    """)
-                    logger.info("Created vector index for similarity search")
-            except Exception as e:
-                logger.warning(f"Could not create vector index: {e}")
-            finally:
-                conn.autocommit = False
         
         logger.info(f"Successfully inserted {inserted_count} new security knowledge articles")
         
@@ -175,6 +192,7 @@ def update_existing_embeddings():
                 )
                 if embeddings and len(embeddings) > 0:
                     embedding = embeddings[0]
+                    logger.info(f"Generated embedding for article {article_id} with {len(embedding)} dimensions")
                     
                     # Update the article with the embedding
                     cur.execute("""
@@ -202,6 +220,84 @@ def update_existing_embeddings():
         if conn and not conn.closed:
             conn.close()
 
-if __name__ == "__main__":
+def reset_and_seed_all():
+    """Reset the database and seed everything from scratch"""
+    load_dotenv()
+    
+    conn = None
+    cur = None
+    try:
+        # Connect to the database
+        conn = psycopg2.connect(os.getenv("DATABASE_URL"))
+        conn.autocommit = True  # Use autocommit for DDL operations
+        cur = conn.cursor()
+        
+        # Drop the existing table and constraints
+        try:
+            cur.execute("DROP TABLE IF EXISTS incident_knowledge_references CASCADE")
+            cur.execute("DROP TABLE IF EXISTS security_knowledge CASCADE")
+            logger.info("Dropped existing tables")
+        except Exception as e:
+            logger.error(f"Error dropping tables: {e}")
+        
+        # Create the security_knowledge table with correct dimensions
+        try:
+            # Ensure vector extension is enabled
+            cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
+            
+            # Create the table with correct dimensions
+            cur.execute("""
+                CREATE TABLE security_knowledge (
+                    id SERIAL PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    embedding vector(1536),
+                    guidance TEXT,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            logger.info("Created security_knowledge table with vector(1536)")
+            
+            # Create references table
+            cur.execute("""
+                CREATE TABLE incident_knowledge_references (
+                    id SERIAL PRIMARY KEY,
+                    incident_id INTEGER,
+                    knowledge_id INTEGER REFERENCES security_knowledge(id),
+                    relevance_score FLOAT,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            logger.info("Created incident_knowledge_references table")
+            
+            # Create index
+            cur.execute("""
+                CREATE INDEX security_knowledge_embedding_idx 
+                ON security_knowledge USING ivfflat (embedding vector_cosine_ops)
+            """)
+            logger.info("Created vector index")
+            
+        except Exception as e:
+            logger.error(f"Error creating tables: {e}")
+            raise
+        
+    except Exception as e:
+        logger.error(f"Error preparing database: {e}")
+        raise
+    finally:
+        if cur and not cur.closed:
+            cur.close()
+        if conn and not conn.closed:
+            conn.close()
+    
+    # Now seed the database with fresh data
     seed_database()
-    update_existing_embeddings() 
+    update_existing_embeddings()
+
+if __name__ == "__main__":
+    # Comment/uncomment these lines as needed
+    # seed_database()
+    # update_existing_embeddings()
+    reset_and_seed_all()  # Use this for a complete reset and reseed 
