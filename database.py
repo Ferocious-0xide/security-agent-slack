@@ -271,9 +271,10 @@ class DatabaseManager:
             cursor = conn.cursor()
             
             results = []
+            # If we have a vector embedding, try vector similarity search first
             if query_embedding:
                 try:
-                    # Try vector similarity search first
+                    # Use vector similarity search
                     cursor.execute("""
                         SELECT id, title, content, category, guidance, embedding <=> %s::vector as distance
                         FROM security_knowledge
@@ -282,8 +283,8 @@ class DatabaseManager:
                         LIMIT %s
                     """, (query_embedding, query_embedding, limit))
                     
-                    rows = cursor.fetchall()
-                    for row in rows:
+                    vector_rows = cursor.fetchall()
+                    for row in vector_rows:
                         knowledge = SecurityKnowledge(
                             id=row[0],
                             title=row[1],
@@ -291,39 +292,38 @@ class DatabaseManager:
                             category=row[3],
                             guidance=row[4]
                         )
-                        if hasattr(SecurityKnowledge, 'embedding'):
-                            knowledge.embedding = row[5]
                         results.append(knowledge)
                     
                     if results:
                         logger.info(f"Found {len(results)} results using vector similarity")
-                        return results
-                        
+                
                 except Exception as e:
                     logger.warning(f"Vector similarity search failed: {str(e)}")
             
-            # Fallback to text search if vector search fails or returns no results
-            cursor.execute("""
-                SELECT id, title, content, category, guidance,
-                       ts_rank(
-                           to_tsvector('english', coalesce(title, '')) || 
-                           to_tsvector('english', coalesce(content, '')) || 
-                           to_tsvector('english', coalesce(category, '')),
-                           plainto_tsquery('english', %s)
-                       ) as rank
-                FROM security_knowledge
-                WHERE 
-                    to_tsvector('english', coalesce(title, '')) || 
-                    to_tsvector('english', coalesce(content, '')) || 
-                    to_tsvector('english', coalesce(category, '')) @@ 
-                    plainto_tsquery('english', %s)
-                ORDER BY rank DESC
-                LIMIT %s
-            """, (query, query, limit))
-            
-            rows = cursor.fetchall()
-            if not results:  # Only use text search results if vector search returned nothing
-                for row in rows:
+            # Fall back to text search - use it even if vector search found results, 
+            # to ensure more diversity in the results
+            text_results = []
+            try:
+                cursor.execute("""
+                    SELECT id, title, content, category, guidance,
+                        ts_rank(
+                            to_tsvector('english', coalesce(title, '')) || 
+                            to_tsvector('english', coalesce(content, '')) || 
+                            to_tsvector('english', coalesce(category, '')),
+                            plainto_tsquery('english', %s)
+                        ) as rank
+                    FROM security_knowledge
+                    WHERE 
+                        to_tsvector('english', coalesce(title, '')) || 
+                        to_tsvector('english', coalesce(content, '')) || 
+                        to_tsvector('english', coalesce(category, '')) @@ 
+                        plainto_tsquery('english', %s)
+                    ORDER BY rank DESC
+                    LIMIT %s
+                """, (query, query, limit + 5))  # Get more results than needed for diversity
+                
+                text_rows = cursor.fetchall()
+                for row in text_rows:
                     knowledge = SecurityKnowledge(
                         id=row[0],
                         title=row[1],
@@ -331,11 +331,63 @@ class DatabaseManager:
                         category=row[3],
                         guidance=row[4]
                     )
-                    results.append(knowledge)
+                    text_results.append(knowledge)
                 
-                logger.info(f"Found {len(results)} results using text search")
+                logger.info(f"Found {len(text_results)} results using text search")
+            except Exception as e:
+                logger.warning(f"Text search failed: {str(e)}")
             
-            return results
+            # Combine vector and text results in a way that ensures diversity
+            final_results = []
+            seen_titles = set()
+            
+            # First add vector results
+            for result in results:
+                if result.title not in seen_titles:
+                    final_results.append(result)
+                    seen_titles.add(result.title)
+                    
+                    if len(final_results) >= limit:
+                        break
+            
+            # Then add text results
+            for result in text_results:
+                if result.title not in seen_titles:
+                    final_results.append(result)
+                    seen_titles.add(result.title)
+                    
+                    if len(final_results) >= limit:
+                        break
+            
+            # If we still don't have enough, try a more general query
+            if len(final_results) < 3:
+                try:
+                    # Do a more general search
+                    cursor.execute("""
+                        SELECT id, title, content, category, guidance
+                        FROM security_knowledge
+                        WHERE title NOT IN %s
+                        ORDER BY id
+                        LIMIT %s
+                    """, (tuple(seen_titles) if seen_titles else ('',), limit - len(final_results)))
+                    
+                    general_rows = cursor.fetchall()
+                    for row in general_rows:
+                        knowledge = SecurityKnowledge(
+                            id=row[0],
+                            title=row[1],
+                            content=row[2],
+                            category=row[3],
+                            guidance=row[4]
+                        )
+                        if knowledge.title not in seen_titles:
+                            final_results.append(knowledge)
+                            seen_titles.add(knowledge.title)
+                except Exception as e:
+                    logger.warning(f"General search failed: {str(e)}")
+            
+            logger.info(f"Returning a total of {len(final_results)} diverse results")
+            return final_results
             
         except Exception as e:
             logger.error(f"Error searching knowledge: {str(e)}")
